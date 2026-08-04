@@ -24,9 +24,18 @@ Honest status. Nothing below is described as finished unless it is finished and 
 | Performance metrics with daily-resampled Sharpe/Sortino | ✅ tested |
 | Five-agent pipeline, LLM-optional, no execute stage | ✅ |
 | Operator terminal | ✅ |
-| CLI: `demo`, `analyse`, `terminal`, `backtest`, `pipeline`, `config` | ✅ |
+| CLI: `demo`, `analyse`, `terminal`, `backtest`, `pipeline`, `config`, `regime`, `research` | ✅ |
+| **Risk-budget guarantee** — entry tolerance + stop-gap allowance, venue-enforced | ✅ tested |
+| **Gaussian HMM** — Baum-Welch, causal filter, incremental step, Viterbi (research-only) | ✅ tested |
+| **Causal regime detection** — expanding-window refit, no lookahead in fit or inference | ✅ tested |
+| **Quant strategies** — momentum, mean reversion, volatility breakout | ✅ |
+| **Regime-gated strategies** — the ICT/quant merge, rejects non-causal regime input | ✅ tested |
+| **Strategy search** — walk-forward, deflated Sharpe, PBO, parameter stability | ✅ tested |
+| **ICT Unicorn model** — breaker ∩ FVG overlap | ✅ tested |
+| **ICT Power of Three** — accumulation/manipulation/distribution, causal | ✅ tested |
+| **Hugging Face adapter** — load your own datasets with provenance | ✅ |
 
-**130 tests passing.**
+**196 tests passing.**
 
 ---
 
@@ -38,25 +47,37 @@ These are deliberate deferrals, documented so they are not mistaken for oversigh
    slippage assumptions; a live ledger should use fixed-point. *(`core/types.py`,
    `portfolio/positions.py`)*
 
-2. **Realised risk can exceed planned risk.** Sizing uses the signal's intended entry, but
-   fills occur at the next bar's open plus slippage. When the open gaps away from the
-   intended entry, actual risk exceeds the budget — observed at roughly 1.3–1.4× planned
-   risk on synthetic data. A production system should re-size at fill time, or reject fills
-   beyond a maximum entry deviation. **This is the highest-priority correctness item.**
+2. **Stop-gap tail risk is bounded but not eliminated.** ~~Realised risk exceeds the
+   budget~~ — *fixed*. Sizing now budgets for an entry tolerance and an expected
+   stop-gap, and the venue expires entries that would fill beyond tolerance. Worst
+   observed loss fell from **7.20× the per-trade budget to 0.57×** on the synthetic
+   fixture.
+
+   What remains is genuine: a stop gapping *further* than the allowance cannot be
+   prevented by any order type, because the position is already open. It is reported
+   as `worst_loss_vs_budget_x`, never hidden. Raising `stop_gap_atr` shrinks size and
+   shrinks the residual; only options remove it.
 
 3. **Single-instrument backtests.** The portfolio supports multiple positions; the
    backtester loops one series. Portfolio-level backtesting is not built.
 
-4. **No walk-forward or parameter-stability tooling.** Everything needed to overfit is
-   present; the tooling to detect it is not. See below.
+4. **HMM regime detection is slow on long series.** The causal fit refits every
+   `refit_every` bars, each an EM run. A year of hourly data takes ~35s. Fine for
+   research, too slow to put inside a large parameter sweep.
 
-5. **No live venue adapter.** Deliberate — the interface exists, the implementation does
+5. **The strategy search's skill bar is dispersion-sensitive.** The deflated Sharpe
+   threshold scales with the variance of results across trials, so a candidate set
+   mixing structurally opposite strategies (momentum *and* mean reversion) raises the
+   bar until nothing can clear it. That is the formula behaving correctly, but it
+   means comparing like with like matters. The threshold is printed so this is visible.
+
+6. **No live venue adapter.** Deliberate — the interface exists, the implementation does
    not, and the router refuses to reach one.
 
-6. **Confluence weights are priors, not estimates.** Stated in the code and in
+7. **Confluence weights are priors, not estimates.** Stated in the code and in
    `ICT_METHODOLOGY.md`. They should be replaced by measured hit rates.
 
-7. **The synthetic generator is not a market simulator.** It produces structure for testing.
+8. **The synthetic generator is not a market simulator.** It produces structure for testing.
    It has no microstructure, no fat tails, no regime persistence beyond an AR(1) drift, and
    no news. Never treat its output as a distribution over real outcomes.
 
@@ -75,16 +96,19 @@ the ICT engine and the strategies, there is **no evidence any of this has an edg
   by quality tier?
 * Replace confluence priors with those measured rates
 
-### 2. Fix the risk-slippage gap
+### 2. Feed your Hugging Face dataset through the platform
 
-Limitation #2 above. Re-size at fill or enforce a maximum entry deviation.
+`HuggingFaceProvider` is built. It needs the dataset id, and `HF_TOKEN` if the
+dataset is private. Run `provider.inspect()` first to confirm the schema, and
+set `kind=DataKind.SYNTHETIC` if the data is generated rather than observed.
 
 ### 3. Overfitting defences
 
-* Walk-forward analysis with strict in-sample/out-of-sample separation
-* Parameter-stability surfaces — an edge that survives only at one threshold is not an edge
-* Monte Carlo trade-order reshuffling for drawdown distribution
-* Multiple-testing correction, since every threshold tried is a hypothesis tested
+* ~~Walk-forward analysis~~ **built** (`axiom.research.walk_forward_splits`)
+* ~~Parameter-stability surfaces~~ **built** (`parameter_stability`)
+* ~~Multiple-testing correction~~ **built** (deflated Sharpe + PBO)
+* Monte Carlo trade-order reshuffling for drawdown distribution — still to do
+* Regime-conditional performance attribution — which regimes does an edge live in?
 
 ### 4. Portfolio-level backtesting
 
@@ -107,7 +131,8 @@ Multi-instrument, correlation-aware exposure limits, cross-instrument risk budge
 ### 7. ICT coverage
 
 * Optimal trade entry automation across timeframes
-* Power of Three (accumulation / manipulation / distribution) daily profiling
+* ~~Power of Three~~ **built** (`axiom.ict.power_of_three`)
+* ~~Unicorn model~~ **built** (`axiom.ict.find_unicorns`)
 * IPDA data ranges (20/40/60-day lookbacks)
 * Weekly and daily bias templates
 * Standard-deviation projections wired into targets

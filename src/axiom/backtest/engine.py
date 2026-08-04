@@ -109,12 +109,32 @@ class Backtester:
         execution_settings: ExecutionSettings | None = None,
         ict_config: ICTConfig | None = None,
         starting_equity: float | None = None,
+        entry_tolerance_atr: float = 0.35,
+        stop_gap_atr: float = 0.75,
     ) -> None:
+        """
+        Args:
+            entry_tolerance_atr: how far, in ATR units, a fill may land adverse
+                to the signal's intended entry. Positions are sized against this
+                worst case and the venue expires fills beyond it, which makes
+                the risk budget an upper bound rather than an estimate. Raising
+                it accepts worse fills at smaller size; lowering it takes fewer
+                trades. Zero disables the guarantee.
+            stop_gap_atr: how far, in ATR units, the protective stop is assumed
+                to fill beyond its trigger. Sizing budgets for this.
+
+                Unlike the entry tolerance this cannot be enforced — the
+                position is already open when a stop gaps — so it only shrinks
+                size. Gaps larger than this remain real tail risk and are
+                reported as ``worst_loss_vs_budget_x`` rather than hidden.
+        """
         self.strategy = strategy
         self.risk_settings = risk_settings or RiskSettings()
         self.execution_settings = execution_settings or ExecutionSettings()
         self.ict_config = ict_config or ICTConfig()
         self.starting_equity = starting_equity or self.risk_settings.account_equity
+        self.entry_tolerance_atr = entry_tolerance_atr
+        self.stop_gap_atr = stop_gap_atr
 
     def run(
         self, series: OHLCVSeries, *, correlate: OHLCVSeries | None = None, warmup: int = 50
@@ -150,6 +170,9 @@ class Backtester:
         open_trade: _OpenTrade | None = None
         pending_entry: tuple[Order, Signal] | None = None
         risk_rejections: dict[str, int] = {}
+        # Worst-case stop distance each entry was sized against, by order id,
+        # so R-multiples are measured against the risk actually budgeted.
+        budgeted_risk_points: dict[int, float] = {}
 
         provenance = series.provenance
         if correlate is not None:
@@ -178,7 +201,10 @@ class Backtester:
                         entry_time=timestamp,
                         quantity=fill.quantity,
                         side=fill.side,
-                        risk_points=entry_signal.risk_points,
+                        risk_points=budgeted_risk_points.get(
+                            origin.order_id if origin else -1,
+                            entry_signal.risk_points,
+                        ),
                         strategy=self.strategy.name,
                         tags=entry_signal.tags,
                         commission=fill.commission,
@@ -199,6 +225,21 @@ class Backtester:
                     self._cancel_siblings(open_trade, origin, venue)
                     open_trade = None
 
+            # An entry can terminate without filling — it expires when the open
+            # gaps beyond its deviation tolerance. Clearing the slot here is
+            # what keeps the strategy alive; without it the backtester waits
+            # forever on a fill that will never arrive and takes no further
+            # trades for the rest of the run.
+            if (
+                pending_entry is not None
+                and pending_entry[0].status.is_terminal
+                and pending_entry[0].filled_quantity == 0
+            ):
+                risk_rejections["entry_expired_gapped"] = (
+                    risk_rejections.get("entry_expired_gapped", 0) + 1
+                )
+                pending_entry = None
+
             portfolio.mark_to_market({instrument.symbol: bar.close})
 
             if i >= warmup and open_trade is None and pending_entry is None:
@@ -214,7 +255,7 @@ class Backtester:
                     signals.append(signal)
                     order = self._submit_entry(
                         signal, context, risk, router, portfolio, timestamp,
-                        risk_rejections,
+                        risk_rejections, budgeted_risk_points,
                     )
                     if order is not None:
                         orders_by_id[order.order_id] = order
@@ -228,6 +269,11 @@ class Backtester:
             starting_equity=self.starting_equity,
             provenance=provenance,
             total_commission=portfolio.total_commission,
+            per_trade_budget=(
+                self.starting_equity
+                * self.risk_settings.max_risk_per_trade_pct
+                / 100.0
+            ),
             notes=self._notes(series, warmup),
         )
         return BacktestResult(
@@ -254,7 +300,10 @@ class Backtester:
         portfolio: Portfolio,
         timestamp: pd.Timestamp,
         risk_rejections: dict[str, int],
+        budgeted_risk_points: dict[int, float],
     ) -> Order | None:
+        atr = context.atr()
+        tolerance = self.entry_tolerance_atr * atr
         decision = risk.evaluate(
             instrument=context.instrument,
             direction=signal.direction,
@@ -262,10 +311,15 @@ class Backtester:
             stop=signal.stop,
             portfolio=portfolio,
             timestamp=timestamp,
+            entry_tolerance=tolerance,
+            exit_gap_allowance=self.stop_gap_atr * atr,
         )
         if not decision.approved:
-            for reason in decision.reasons or ("unspecified",):
-                risk_rejections[reason] = risk_rejections.get(reason, 0) + 1
+            # Aggregate on stable codes, not on the rendered reasons — those
+            # embed prices and quantities, so every rejection would be its own
+            # unique key and the counts would all read 1.
+            for code in decision.codes or ("unspecified",):
+                risk_rejections[code] = risk_rejections.get(code, 0) + 1
             return None
 
         order = Order(
@@ -277,8 +331,15 @@ class Backtester:
             stop_loss=signal.stop,
             take_profit=signal.primary_target,
             tag=",".join(signal.tags),
+            reference_price=signal.entry,
+            # Zero means the guarantee is switched off, not that a zero-tick
+            # deviation is enforced — the latter would expire every order,
+            # since slippage makes any fill at least slightly adverse.
+            max_entry_deviation=tolerance if tolerance > 0 else None,
         )
         router.submit(order, timestamp)
+        if decision.sizing is not None:
+            budgeted_risk_points[order.order_id] = decision.sizing.stop_distance
         return order if order.is_open else None
 
     def _arm_bracket(

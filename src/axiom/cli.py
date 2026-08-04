@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from functools import partial
+from typing import Any
 
 import typer
 from rich.console import Console
@@ -18,9 +20,16 @@ from axiom.data.registry import default_registry
 from axiom.data.synthetic import SyntheticProvider
 from axiom.ict.engine import ICTConfig, ICTEngine
 from axiom.portfolio.positions import Portfolio
+from axiom.quant.regime import RegimeModel
+from axiom.research.lab import Candidate, StrategyLab, grid
 from axiom.risk.manager import RiskManager
 from axiom.strategy.base import Strategy
 from axiom.strategy.ict_strategies import LiquidityRaidReversal, SilverBulletStrategy
+from axiom.strategy.quant_strategies import (
+    MeanReversionZScore,
+    TimeSeriesMomentum,
+    VolatilityBreakout,
+)
 from axiom.terminal.app import TerminalState, render
 
 app = typer.Typer(
@@ -32,7 +41,19 @@ console = Console()
 STRATEGIES: dict[str, type[Strategy]] = {
     "silver-bullet": SilverBulletStrategy,
     "liquidity-raid": LiquidityRaidReversal,
+    "momentum": TimeSeriesMomentum,
+    "mean-reversion": MeanReversionZScore,
+    "vol-breakout": VolatilityBreakout,
 }
+
+
+def _make(cls: type[Strategy], params: dict[str, Any]) -> Strategy:
+    """Build a strategy from a parameter dict.
+
+    A named function rather than a default-capture lambda so the candidate
+    factory has an inferable type.
+    """
+    return cls(**params)
 
 
 def _load_series(
@@ -259,6 +280,95 @@ def config() -> None:
         f"\n[bold]agents[/bold]           "
         f"{'enabled (' + settings.agents.agent_model + ')' if settings.agents.enabled else 'deterministic mode (no API key)'}"
     )
+
+
+@app.command()
+def regime(
+    symbol: str = typer.Option("ES"),
+    timeframe: str = typer.Option("1h"),
+    days: int = typer.Option(365),
+    states: int = typer.Option(3, help="Number of hidden states."),
+    synthetic: bool = typer.Option(False),
+    seed: int = typer.Option(11),
+) -> None:
+    """Detect market regimes with a causal HMM.
+
+    Fitting uses an expanding window of past data and inference uses the
+    forward filter only, so the regime at any bar depends on nothing after it.
+    """
+    series = _load_series(symbol, timeframe, days, synthetic, seed)
+    console.print(f"[cyan]{series.describe()}[/cyan]")
+    console.print("[dim]fitting causal HMM (expanding-window refit)...[/dim]")
+
+    regimes = RegimeModel(n_states=states).fit_causal(series)
+    console.print(f"\n{regimes.summary()}\n")
+    for state, label in sorted(regimes.labels.items()):
+        console.print(f"  state {state}  {label.value}")
+
+    last = len(series) - 1
+    if regimes.is_known_at(last):
+        console.print(
+            f"\n[bold]current regime[/bold]  {regimes.label_at(last).value} "
+            f"(confidence {regimes.confidence_at(last):.0%})"
+        )
+    else:
+        console.print("\n[yellow]not enough history to assign a regime yet[/yellow]")
+
+
+@app.command()
+def research(
+    symbol: str = typer.Option("ES"),
+    timeframe: str = typer.Option("1h"),
+    days: int = typer.Option(365),
+    synthetic: bool = typer.Option(False),
+    seed: int = typer.Option(11),
+    equity: float = typer.Option(5_000_000.0, help="Account equity for sizing."),
+    folds: int = typer.Option(4, help="Walk-forward folds."),
+) -> None:
+    """Sweep many strategies walk-forward and rank them honestly.
+
+    Every candidate counts as a trial, and the winner is judged against the
+    deflated Sharpe — the bar the best of that many coin flips would clear.
+    A search that concludes "nothing survived" has done its job.
+    """
+    series = _load_series(symbol, timeframe, days, synthetic, seed)
+    console.print(f"[cyan]{series.describe()}[/cyan]")
+
+    candidates: list[Candidate] = []
+    for params in grid(lookback=[48, 96, 192], stop_atr=[1.5, 2.5]):
+        candidates.append(
+            Candidate(
+                "ts_momentum",
+                partial(_make, TimeSeriesMomentum, params),
+                params,
+            )
+        )
+    for params in grid(lookback=[48, 96], entry_z=[1.5, 2.0, 2.5]):
+        candidates.append(
+            Candidate(
+                "mean_reversion",
+                partial(_make, MeanReversionZScore, params),
+                params,
+            )
+        )
+    for params in grid(breakout_lookback=[12, 24]):
+        candidates.append(
+            Candidate(
+                "vol_breakout",
+                partial(_make, VolatilityBreakout, params),
+                params,
+            )
+        )
+
+    console.print(f"[dim]evaluating {len(candidates)} candidates over {folds} folds...[/dim]\n")
+    outcome = StrategyLab(
+        risk_settings=RiskSettings(
+            account_equity=equity, max_gross_exposure_pct=2000.0
+        ),
+        n_folds=folds,
+        warmup=200,
+    ).search(series, candidates)
+    console.print(outcome.render())
 
 
 def main() -> None:

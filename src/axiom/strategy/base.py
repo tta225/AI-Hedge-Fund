@@ -168,6 +168,11 @@ class Strategy(ABC):
     """Base class for signal generators."""
 
     name: str = "strategy"
+    #: Whether this strategy reads ICT state. Analysing a long series costs
+    #: real time, and a parameter sweep re-runs the backtester hundreds of
+    #: times — so purely quantitative strategies opt out and skip it entirely.
+    #: Leave True unless ``evaluate`` never touches ``context``'s ICT accessors.
+    requires_ict: bool = True
 
     def __init__(self, **params: object) -> None:
         self.params = params

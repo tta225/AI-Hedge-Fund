@@ -32,10 +32,13 @@ class RiskDecision:
     quantity: float
     reasons: tuple[str, ...] = ()
     sizing: SizingResult | None = None
+    #: Stable codes for the reasons, so rejections aggregate across runs.
+    #: The reasons carry the numbers; the codes carry the category.
+    codes: tuple[str, ...] = ()
 
     @classmethod
-    def reject(cls, *reasons: str) -> RiskDecision:
-        return cls(approved=False, quantity=0.0, reasons=reasons)
+    def reject(cls, *reasons: str, codes: tuple[str, ...] = ()) -> RiskDecision:
+        return cls(approved=False, quantity=0.0, reasons=reasons, codes=codes)
 
     @classmethod
     def approve(cls, sizing: SizingResult, *notes: str) -> RiskDecision:
@@ -150,22 +153,38 @@ class RiskManager:
         portfolio: Portfolio,
         timestamp: pd.Timestamp,
         risk_pct: float | None = None,
+        entry_tolerance: float = 0.0,
+        exit_gap_allowance: float = 0.0,
     ) -> RiskDecision:
-        """Approve or reject a proposed entry, and size it if approved."""
+        """Approve or reject a proposed entry, and size it if approved.
+
+        Args:
+            entry_tolerance: how far the fill may land adverse to ``entry``.
+                Size is computed against the worst case, so the returned
+                quantity keeps realised risk inside the budget even when the
+                fill gaps. The caller must enforce the same bound at the venue
+                via :attr:`~axiom.execution.base.Order.max_entry_deviation`.
+            exit_gap_allowance: how far the protective stop is expected to fill
+                beyond its trigger. Unlike the entry, this cannot be enforced —
+                a stop gap happens while the position is already open — so it is
+                budgeted for in size and any residual is reported.
+        """
         if self._kill_switch:
             return RiskDecision.reject(
-                "kill switch is engaged — no orders may be generated"
+                "kill switch is engaged — no orders may be generated", codes=("kill_switch",)
             )
         if direction is Direction.NEUTRAL:
-            return RiskDecision.reject("no directional bias; nothing to trade")
+            return RiskDecision.reject("no directional bias; nothing to trade", codes=("no_direction",))
 
         self.roll_day(timestamp)
         settings = self.settings
         equity = portfolio.equity if portfolio.equity > 0 else settings.account_equity
         blocks: list[str] = []
+        block_codes: list[str] = []
 
         if self.state.is_halted:
             blocks.append(f"trading halted: {self.state.halted_reason}")
+            block_codes.append("halted")
 
         realised_today = portfolio.realised_on(timestamp)
         daily_limit = -abs(settings.daily_loss_limit_cash)
@@ -176,12 +195,14 @@ class RiskManager:
             )
             self.state.halted_reason = reason
             blocks.append(reason)
+            block_codes.append("daily_loss_limit")
 
         if self.state.consecutive_losses >= settings.max_consecutive_losses:
             blocks.append(
                 f"{self.state.consecutive_losses} consecutive losses ≥ limit of "
                 f"{settings.max_consecutive_losses}"
             )
+            block_codes.append("consecutive_losses")
 
         open_count = len(portfolio.open_positions)
         already_open = not portfolio.position(instrument).is_flat
@@ -189,9 +210,10 @@ class RiskManager:
             blocks.append(
                 f"{open_count} open positions ≥ limit of {settings.max_positions}"
             )
+            block_codes.append("max_positions")
 
         if blocks:
-            return RiskDecision.reject(*blocks)
+            return RiskDecision.reject(*blocks, codes=tuple(block_codes))
 
         # --- size ---
         pct = settings.max_risk_per_trade_pct if risk_pct is None else risk_pct
@@ -212,7 +234,7 @@ class RiskManager:
             )
             budget = remaining_daily
         if budget <= 0:
-            return RiskDecision.reject("no daily loss budget remaining")
+            return RiskDecision.reject("no daily loss budget remaining", codes=("daily_budget_exhausted",))
 
         # Stop must be on the correct side of entry for the intended direction.
         if direction is Direction.BULLISH and stop >= entry:
@@ -225,12 +247,16 @@ class RiskManager:
             )
 
         try:
-            sizing = size_by_risk(instrument, entry, stop, budget)
+            sizing = size_by_risk(
+                instrument, entry, stop, budget,
+                entry_tolerance=entry_tolerance,
+                exit_gap_allowance=exit_gap_allowance,
+            )
         except ValueError as exc:
-            return RiskDecision.reject(str(exc))
+            return RiskDecision.reject(str(exc), codes=("unsizable",))
 
         if not sizing.is_tradable:
-            return RiskDecision.reject(sizing.rationale)
+            return RiskDecision.reject(sizing.rationale, codes=(sizing.code,))
 
         # --- exposure ---
         added = sizing.quantity * entry * instrument.point_value

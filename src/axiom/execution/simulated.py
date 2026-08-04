@@ -79,6 +79,12 @@ class SimulatedVenue(ExecutionVenue):
                 produced.append(fill)
                 self.fills.append(fill)
                 self._working.remove(order)
+            elif order.status.is_terminal:
+                # `_try_fill` can terminate an order without filling it — an
+                # entry that gapped beyond its deviation tolerance expires.
+                # Without this branch it would stay working and be retried on
+                # every subsequent bar.
+                self._working.remove(order)
         return produced
 
     def _try_fill(self, order: Order, bar: Bar) -> Fill | None:
@@ -132,6 +138,25 @@ class SimulatedVenue(ExecutionVenue):
         price = order.instrument.round_to_tick(reference + slippage * order.side.sign)
         # Never report a fill outside the bar's actual range.
         price = min(max(price, bar.low), bar.high)
+
+        # Entry-deviation guard. The order was sized assuming the fill would
+        # land no worse than `reference_price ± max_entry_deviation`. If the
+        # market gapped past that, filling anyway would breach the risk budget
+        # the size was computed from, so the order expires unfilled instead.
+        #
+        # Missing a trade is recoverable; silently taking one at 2x the intended
+        # risk is not. Protective exits never set this field and so never expire.
+        if order.max_entry_deviation is not None and order.reference_price is not None:
+            adverse = (price - order.reference_price) * order.side.sign
+            if adverse > order.max_entry_deviation:
+                order.status = OrderStatus.EXPIRED
+                order.reject_reason = (
+                    f"entry would fill {adverse:.4f} pts adverse to the intended "
+                    f"{order.reference_price:.4f}, beyond the "
+                    f"{order.max_entry_deviation:.4f} pt tolerance the size was "
+                    f"computed against"
+                )
+                return None
 
         commission = self.fill_model.commission(order.quantity)
         order.filled_quantity = order.quantity

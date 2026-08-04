@@ -112,6 +112,7 @@ class PerformanceReport:
             ("calmar", "Calmar", "{:.2f}"),
             ("cagr_pct", "CAGR", "{:.2f}%"),
             ("total_commission", "Commission paid", "${:,.2f}"),
+            ("worst_loss_vs_budget_x", "Worst loss vs budget", "{:.2f}x"),
         ]
         for key, label, fmt in order:
             if key in self.metrics:
@@ -264,9 +265,31 @@ def build_report(
     provenance: Provenance,
     total_commission: float = 0.0,
     notes: list[str] | None = None,
+    per_trade_budget: float | None = None,
 ) -> PerformanceReport:
     metrics = compute_metrics(trades, equity, starting_equity, total_commission)
     collected = list(notes or [])
+
+    # Did any trade actually lose more than it was allowed to? Sizing budgets
+    # for entry slippage and expected stop-gap, but a gap larger than the
+    # allowance is real tail risk that no order type prevents. Surfacing the
+    # worst observed breach keeps that visible instead of buried in the
+    # average.
+    if per_trade_budget and per_trade_budget > 0 and trades:
+        worst = max(-(t.pnl + t.commission) for t in trades)
+        overrun = worst / per_trade_budget
+        metrics["per_trade_budget"] = per_trade_budget
+        metrics["worst_loss"] = max(worst, 0.0)
+        metrics["worst_loss_vs_budget_x"] = max(overrun, 0.0)
+        if overrun > 1.05:
+            collected.append(
+                f"Worst trade lost ${worst:,.2f} against a ${per_trade_budget:,.2f} "
+                f"per-trade budget ({overrun:.2f}x). The excess is stop-gap risk: "
+                "the position was already open when price gapped through the stop, "
+                "so no order type could have prevented it. Reduce it by raising "
+                "stop_gap_atr (smaller size) or accept it as tail risk."
+            )
+
     if len(trades) < 30:
         collected.append(
             f"Only {len(trades)} trades — too few for the win rate or profit factor "

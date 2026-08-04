@@ -40,6 +40,19 @@ class Order:
     #: Bracket legs, priced when the order is created.
     stop_loss: float | None = None
     take_profit: float | None = None
+    #: The price this order was sized against — the signal's intended entry.
+    reference_price: float | None = None
+    #: Maximum adverse distance, in price points, between ``reference_price``
+    #: and the fill. A fill worse than this expires the order instead.
+    #:
+    #: This is the venue half of the risk-budget guarantee: sizing assumes the
+    #: worst case within this bound, and the venue refuses anything outside it,
+    #: so realised risk cannot exceed the budget.
+    #:
+    #: Deliberately ``None`` on protective exits. A stop-loss must always fill,
+    #: however bad the price — refusing to exit because the fill is unfavourable
+    #: is how a bounded loss becomes an unbounded one.
+    max_entry_deviation: float | None = None
 
     def __post_init__(self) -> None:
         if self.quantity <= 0:

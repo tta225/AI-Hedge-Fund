@@ -22,6 +22,8 @@ dependencies = [
 yfinance = ["yfinance>=0.2.40"]
 alpaca = ["alpaca-py>=0.21"]
 crypto = ["ccxt>=4.3"]
+# Load your own training data from the Hugging Face Hub.
+huggingface = ["datasets>=2.20"]
 # AI agent layer (Research / Debate / Backtest / Risk / Review).
 agents = ["anthropic>=0.34"]
 # NOTE: OpenBB is AGPL-3.0. It is deliberately NOT a core dependency and is

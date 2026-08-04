@@ -32,6 +32,12 @@ python -m axiom.cli backtest --strategy silver-bullet --synthetic --days 120
 # The five-agent pipeline (Research → Debate → Backtest → Risk → Review)
 python -m axiom.cli pipeline --synthetic
 
+# Causal HMM regime detection
+python -m axiom.cli regime --synthetic --states 3
+
+# Sweep many strategies walk-forward, ranked by deflated Sharpe
+python -m axiom.cli research --synthetic --folds 4
+
 # Current safety posture
 python -m axiom.cli config
 ```
@@ -57,7 +63,9 @@ axiom.data        provider abstraction + adapters (CSV, yfinance, synthetic, Ope
 axiom.ict         ── the proprietary alpha engine ──
                   swings · structure (BOS/CHoCH/MSS) · fair value gaps · order blocks
                   liquidity pools & sweeps · dealing ranges & OTE · SMT divergence
-axiom.strategy    signal generation on top of ICT state
+axiom.quant       Gaussian HMM and causal market-regime detection
+axiom.research    strategy search: walk-forward, deflated Sharpe, PBO
+axiom.strategy    signal generation — ICT setups, quant families, regime gating
 axiom.risk        risk-first position sizing, hard limits, kill switch
 axiom.execution   order model, simulated venue, routing choke point
 axiom.portfolio   positions and P&L accounting
@@ -99,7 +107,31 @@ Provenance.synthetic("gen").derive("resample").derive("clean").is_evidential
 Any performance report built from non-evidential data renders a warning banner and answers
 `False` to `report.is_evidence`.
 
-### 3. No accidental execution
+### 3. Searching many strategies does not manufacture an edge
+
+Testing 500 candidates and keeping the best produces an impressive Sharpe *even
+on pure noise* — with 500 trials the expected maximum is around 2.5–3.0 from
+selection alone. `StrategyLab` therefore counts every candidate as a trial and
+ranks on the **deflated Sharpe**, the probability the result beats the best of
+that many coin flips. It also reports **Probability of Backtest Overfitting**,
+which asks the separate question of whether the selection *procedure* finds
+strategies that generalise at all.
+
+A search that concludes *"nothing survived"* has done its job. That is the
+expected outcome of most searches.
+
+### 4. Risk budgets are upper bounds, not estimates
+
+Sizing budgets for the entry gapping away from its intended price *and* for the
+stop gapping through its trigger, and the venue expires entries that would fill
+beyond tolerance. On the synthetic fixture this moved the worst trade from
+**7.20× the per-trade budget to 0.57×**.
+
+The two halves are not symmetric, and the docs say so: an entry that gaps can be
+refused, because you are not in the position yet. A stop that gaps cannot be —
+no order type prevents it. That residual is reported, not hidden.
+
+### 5. No accidental execution
 
 * The **kill switch** is checked first in both the risk manager and the router, and cannot be overridden by any argument, mode, or strategy.
 * `OrderRouter` **refuses to be constructed** around a live venue unless the platform is in live mode with `AXIOM_LIVE_TRADING_CONFIRMED=I_UNDERSTAND_THE_RISK`.

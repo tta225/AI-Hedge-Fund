@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "axiom"
+version = "0.1.0"
+description = "AXIOM — proprietary AI hedge fund platform: ICT alpha engine, research terminal, and paper-first execution."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+dependencies = [
+    "numpy>=1.26",
+    "pandas>=2.2",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "rich>=13.7",
+    "typer>=0.12",
+]
+
+[project.optional-dependencies]
+# Free / low-cost market data adapters.
+yfinance = ["yfinance>=0.2.40"]
+alpaca = ["alpaca-py>=0.21"]
+crypto = ["ccxt>=4.3"]
+# AI agent layer (Research / Debate / Backtest / Risk / Review).
+agents = ["anthropic>=0.34"]
+# NOTE: OpenBB is AGPL-3.0. It is deliberately NOT a core dependency and is
+# isolated behind axiom.data.providers.openbb_provider. See docs/LICENSING.md
+# before enabling this extra in anything you intend to distribute.
+openbb = ["openbb>=4.3"]
+dev = [
+    "pytest>=8.2",
+    "pytest-cov>=5.0",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[project.scripts]
+axiom = "axiom.cli:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/axiom"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "network: test requires outbound network access",
+    "slow: long-running test",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF"]
+ignore = [
+    "E501",   # line length is handled by the formatter
+    # `str, Enum` rather than `StrEnum`: these values are serialised into
+    # config, reports, and JSON, and the mixin's behaviour there is what we
+    # want. Deliberate, not legacy.
+    "UP042",
+    # Typographic characters (×, –, ⚠) appear in operator-facing strings on
+    # purpose; the terminal and reports are meant to be read by humans.
+    "RUF001", "RUF002", "RUF003",
+]
+
+[tool.mypy]
+python_version = "3.11"
+plugins = ["pydantic.mypy"]
+strict = true
+warn_unreachable = true
+disallow_untyped_defs = true
+ignore_missing_imports = true
+files = ["src/axiom"]

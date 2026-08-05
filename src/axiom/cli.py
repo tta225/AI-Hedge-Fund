@@ -468,6 +468,44 @@ def data_check(
 
 
 @app.command()
+def web(
+    port: int = typer.Option(8000, help="Port to serve on."),
+    host: str = typer.Option(
+        "127.0.0.1",
+        help="Interface to bind. Leave as 127.0.0.1 unless you know why not.",
+    ),
+    reload: bool = typer.Option(False, help="Restart on code changes (development)."),
+) -> None:
+    """Start the browser console at http://127.0.0.1:8000
+
+    Binds to localhost by default. This console exposes account equity, strategy
+    configuration and every data source the platform can reach, and it has no
+    authentication of its own — so binding it to 0.0.0.0 publishes all of that to
+    anything that can route to this machine. Put it behind an authenticating
+    proxy before you widen the bind address.
+    """
+    try:
+        from axiom.web.server import serve
+    except ImportError:
+        console.print(
+            "[bold red]The web extra is not installed.[/bold red]\n\n"
+            "Run this, then try again:\n\n"
+            r"    pip install -e '.\[web]'"
+        )
+        raise typer.Exit(code=1) from None
+
+    url = f"http://{'127.0.0.1' if host in ('0.0.0.0', '::') else host}:{port}"
+    console.print(f"\n[bold cyan]AXIOM console[/bold cyan] → [bold]{url}[/bold]")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        console.print(
+            f"[yellow]Bound to {host} — reachable from other machines, with no "
+            f"authentication.[/yellow]"
+        )
+    console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
+    serve(host=host, port=port, reload=reload)
+
+
+@app.command()
 def setup() -> None:
     """Interactively save your API keys. Run this once.
 

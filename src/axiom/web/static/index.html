@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>AXIOM — Operator Console</title>
+<link rel="stylesheet" href="/static/app.css" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230b0e14'/><path d='M8 24 L16 8 L24 24 M11.5 18.5 H20.5' stroke='%2338bdf8' stroke-width='2.5' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+      <path d="M8 24 L16 8 L24 24 M11.5 18.5 H20.5" />
+    </svg>
+    <span class="wordmark">AXIOM</span>
+    <span class="brand-sub">Operator Console</span>
+  </div>
+
+  <nav class="tabs" role="tablist">
+    <button class="tab is-active" role="tab" data-view="dashboard">Dashboard</button>
+    <button class="tab" role="tab" data-view="backtest">Backtest</button>
+    <button class="tab" role="tab" data-view="data">Data Sources</button>
+  </nav>
+
+  <div class="topbar-right">
+    <span id="conn" class="pill pill-muted" title="API connection">connecting…</span>
+    <button id="theme-toggle" class="icon-btn" title="Toggle light / dark" aria-label="Toggle theme">◐</button>
+  </div>
+</header>
+
+<!-- Provenance banner. Always present, never hidden by a layout change: the
+     operator must never be unsure whether they are looking at real bars. -->
+<div id="provenance" class="provenance" hidden></div>
+
+<section class="controls" aria-label="Query controls">
+  <div class="field">
+    <label for="symbol">Instrument</label>
+    <input id="symbol" list="symbols" value="ES" autocomplete="off" spellcheck="false" />
+    <datalist id="symbols"></datalist>
+  </div>
+  <div class="field">
+    <label for="timeframe">Timeframe</label>
+    <select id="timeframe"></select>
+  </div>
+  <div class="field">
+    <label for="days">Lookback (days)</label>
+    <input id="days" type="number" min="1" max="1825" value="30" />
+  </div>
+  <div class="field field-check">
+    <label for="synthetic" title="Generated bars. A correctness check, never evidence.">
+      <input id="synthetic" type="checkbox" />
+      <span>Generated bars</span>
+    </label>
+  </div>
+  <div class="field field-check">
+    <label for="strict" title="High-conviction ICT preset — fewer, stronger features.">
+      <input id="strict" type="checkbox" />
+      <span>Strict preset</span>
+    </label>
+  </div>
+  <button id="run" class="btn btn-primary">Analyse</button>
+</section>
+
+<main>
+
+<!-- ══════════════════════════ DASHBOARD ══════════════════════════ -->
+<div class="view is-active" id="view-dashboard">
+
+  <div class="statrow" id="statrow"></div>
+
+  <div class="panel panel-chart">
+    <div class="panel-head">
+      <h2>Price &amp; Structure</h2>
+      <div class="legend" id="legend">
+        <label class="lg lg-fvg"><input type="checkbox" data-layer="fvg" checked><span>Fair value gaps</span></label>
+        <label class="lg lg-ob"><input type="checkbox" data-layer="ob" checked><span>Order blocks</span></label>
+        <label class="lg lg-liq"><input type="checkbox" data-layer="liq" checked><span>Liquidity</span></label>
+        <label class="lg lg-struct"><input type="checkbox" data-layer="struct" checked><span>Structure</span></label>
+        <label class="lg lg-range"><input type="checkbox" data-layer="range" checked><span>Range / OTE</span></label>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="chart" role="img" aria-label="Candlestick chart with ICT overlays"></canvas>
+      <div id="crosshair-readout" class="readout" hidden></div>
+    </div>
+    <div class="chart-foot" id="chart-foot"></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-head"><h2>Market Structure</h2></div>
+      <div class="panel-body" id="structure-panel"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Draw on Liquidity</h2></div>
+      <div class="panel-body table-scroll" id="liquidity-panel"></div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-head"><h2>Order Blocks &amp; Imbalance</h2></div>
+      <div class="panel-body table-scroll" id="zones-panel"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Structure Events</h2></div>
+      <div class="panel-body table-scroll" id="events-panel"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ BACKTEST ══════════════════════════ -->
+<div class="view" id="view-backtest">
+  <section class="controls controls-sub">
+    <div class="field">
+      <label for="strategy">Strategy</label>
+      <select id="strategy"></select>
+    </div>
+    <div class="field">
+      <label for="equity">Starting equity ($)</label>
+      <input id="equity" type="number" min="1000" step="1000" value="250000" />
+    </div>
+    <div class="field">
+      <label for="warmup">Warmup bars</label>
+      <input id="warmup" type="number" min="0" max="5000" value="100" />
+    </div>
+    <button id="run-backtest" class="btn btn-primary">Run backtest</button>
+  </section>
+
+  <div id="bt-warning" class="callout callout-warn" hidden></div>
+  <div class="statrow" id="bt-stats"></div>
+
+  <div class="panel panel-chart">
+    <div class="panel-head"><h2>Equity Curve</h2><span class="muted" id="bt-span"></span></div>
+    <div class="chart-wrap chart-wrap-short">
+      <canvas id="equity-chart" role="img" aria-label="Equity curve"></canvas>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-head"><h2>Signal Funnel</h2></div>
+      <div class="panel-body" id="funnel-panel"></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Caveats</h2></div>
+      <div class="panel-body" id="notes-panel"></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Trades</h2></div>
+    <div class="panel-body table-scroll table-scroll-tall" id="trades-panel"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ DATA SOURCES ══════════════════════════ -->
+<div class="view" id="view-data">
+  <div class="callout callout-info">
+    <strong>What this page is for.</strong> It tells you whether AXIOM can reach real
+    market data right now. <em>Credentialed</em> means a key is present.
+    <em>Reachable</em> means the network actually let us talk to the host. They are
+    different, and a source has to be both before any number here counts as evidence.
+  </div>
+
+  <div class="panel">
+    <div class="panel-head">
+      <h2>Sources</h2>
+      <button id="refresh-status" class="btn btn-ghost">Refresh</button>
+    </div>
+    <div class="panel-body" id="sources-panel"></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="panel">
+      <div class="panel-head"><h2>Credentials</h2></div>
+      <div class="panel-body"><pre class="mono-block" id="creds-panel"></pre></div>
+    </div>
+    <div class="panel">
+      <div class="panel-head"><h2>Provider Registry</h2></div>
+      <div class="panel-body" id="registry-panel"></div>
+    </div>
+  </div>
+</div>
+
+</main>
+
+<div id="toast" class="toast" hidden></div>
+<div id="busy" class="busy" hidden><div class="spinner"></div><span id="busy-label">Working…</span></div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

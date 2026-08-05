@@ -1,0 +1,303 @@
+"""AXIOM web API and single-page operator console.
+
+Design
+------
+This is a thin HTTP surface over the same engines the CLI drives. It contains no
+trading logic of its own — every number it returns was computed by
+`ICTEngine`, `Backtester` or `RegimeModel`, so the browser and the terminal can
+never disagree about what the platform thinks.
+
+Two rules it does enforce:
+
+**Synthetic data is opt-in, never a fallback.** A failed feed returns HTTP 503
+naming the providers that failed. It does not quietly substitute generated bars
+— a fabricated equity curve rendered in a polished UI is worse than an error
+message, because it looks like a result.
+
+**Every price-bearing response carries provenance.** See `serialise`.
+
+Run it with `axiom web`, or `uvicorn axiom.web.server:app`.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any, Literal
+
+from axiom.backtest.engine import Backtester
+from axiom.core.config import RiskSettings, get_settings
+from axiom.core.series import OHLCVSeries
+from axiom.core.types import INSTRUMENTS, get_instrument
+from axiom.data.base import BarRequest, ProviderError
+from axiom.data.registry import default_registry
+from axiom.data.synthetic import SyntheticProvider
+from axiom.ict.engine import STRICT_CONFIG, ICTConfig, ICTEngine
+from axiom.web.serialise import (
+    backtest_payload,
+    ict_payload,
+    instrument_payload,
+    provenance_payload,
+    series_payload,
+)
+
+try:
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import FileResponse, JSONResponse
+    from fastapi.staticfiles import StaticFiles
+    from pydantic import BaseModel, Field
+except ImportError as exc:  # pragma: no cover - guarded by the CLI
+    raise ImportError(
+        "the web extra is not installed. Run:\n"
+        "    pip install -e '.[web]'"
+    ) from exc
+
+log = logging.getLogger("axiom.web")
+
+STATIC_DIR = Path(__file__).parent / "static"
+
+#: Strategies exposed to the UI. Mirrors the CLI's table deliberately: one of
+#: them growing a strategy the other cannot run is a bug, not a feature.
+from axiom.cli import STRATEGIES  # noqa: E402  (import cycle avoided at runtime)
+
+#: Hard ceiling on a single request's lookback. Without it, one careless
+#: `days=100000` on a 1m timeframe pages a provider for twenty minutes while the
+#: browser sits on a spinner and the worker is unavailable to everyone else.
+MAX_DAYS = 1825
+
+app = FastAPI(
+    title="AXIOM",
+    description="ICT alpha engine, research terminal, and paper-first execution.",
+    version="0.1.0",
+)
+
+
+class SeriesQuery(BaseModel):
+    """Common bar-selection parameters."""
+
+    symbol: str = Field("ES", max_length=32)
+    timeframe: str = Field("15m", max_length=8)
+    days: int = Field(30, ge=1, le=MAX_DAYS)
+    synthetic: bool = False
+    seed: int = Field(7, ge=0, le=2**31 - 1)
+
+
+class AnalyseQuery(SeriesQuery):
+    strict: bool = Field(False, description="Use the high-conviction ICT preset.")
+    max_bars: int = Field(1500, ge=50, le=6000)
+
+
+class BacktestQuery(SeriesQuery):
+    days: int = Field(120, ge=1, le=MAX_DAYS)
+    strategy: str = Field("silver-bullet", max_length=64)
+    equity: float = Field(250_000.0, gt=0, le=1e12)
+    warmup: int = Field(100, ge=0, le=5000)
+
+
+def _load_series(query: SeriesQuery) -> OHLCVSeries:
+    """Fetch bars, or fail loudly.
+
+    The `synthetic` flag is the only path to generated data. There is no
+    fallback: see the module docstring.
+    """
+    instrument = get_instrument(query.symbol)
+    request = BarRequest.lookback(instrument, query.timeframe, query.days)
+
+    if query.synthetic:
+        return SyntheticProvider(seed=query.seed, start_price=5200.0).fetch_bars(request)
+
+    try:
+        return default_registry().fetch_bars(request)
+    except ProviderError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "no_market_data",
+                "message": str(exc),
+                "hint": (
+                    "No real data provider could serve this request. Enable "
+                    "'Generated bars' to run offline — results from generated "
+                    "data are a correctness check, never performance."
+                ),
+            },
+        ) from exc
+
+
+@app.get("/api/health")
+def health() -> dict[str, Any]:
+    return {"status": "ok", "service": "axiom", "version": app.version}
+
+
+@app.get("/api/instruments")
+def instruments() -> dict[str, Any]:
+    """The built-in instrument catalogue, plus the strategy and timeframe menus."""
+    return {
+        "instruments": [instrument_payload(i) for i in INSTRUMENTS.values()],
+        "strategies": sorted(STRATEGIES),
+        "timeframes": ["1m", "5m", "15m", "30m", "1h", "4h", "1d"],
+    }
+
+
+@app.get("/api/status")
+def status() -> dict[str, Any]:
+    """Which data sources are credentialed, and which are actually reachable.
+
+    These are different questions — a provider can be fully credentialed and
+    still unroutable on a restricted network — so the UI shows both. See
+    `docs/DATA_SETUP.md`.
+    """
+    from axiom.core.credentials import describe_credentials
+    from axiom.data import AlpacaProvider, CoinbaseProvider, HuggingFaceProvider
+
+    probes = [
+        ("alpaca", AlpacaProvider().check_credentials()),
+        ("coinbase", CoinbaseProvider().check_reachable()),
+        ("huggingface", HuggingFaceProvider("unused/unused").check_token()),
+    ]
+    sources = [
+        {
+            "name": name,
+            "ok": text.lstrip().startswith("✓"),
+            "detail": text.strip(),
+        }
+        for name, text in probes
+    ]
+
+    registry = default_registry()
+    reachable = {s["name"] for s in sources if s["ok"]}
+    credentialed = [p.name for p in registry.available()]
+
+    return {
+        "credentials": describe_credentials(),
+        "sources": sources,
+        "registry": {
+            "order": [p.name for p in registry.providers],
+            "credentialed": credentialed,
+            "reachable": [n for n in credentialed if n in reachable],
+        },
+        "settings": {
+            "trading_mode": get_settings().trading_mode.value,
+            "kill_switch": get_settings().kill_switch,
+        },
+    }
+
+
+@app.post("/api/analyse")
+def analyse(query: AnalyseQuery) -> dict[str, Any]:
+    """Bars plus the full ICT structural read, ready to draw."""
+    series = _load_series(query)
+    config = STRICT_CONFIG if query.strict else ICTConfig()
+    state = ICTEngine(config).analyse(series)
+
+    payload = series_payload(series, max_bars=query.max_bars)
+    return {
+        "series": payload,
+        "ict": ict_payload(state, series, offset=payload["index_offset"]),
+        "instrument": instrument_payload(series.instrument),
+    }
+
+
+@app.post("/api/backtest")
+def backtest(query: BacktestQuery) -> dict[str, Any]:
+    """Run a strategy. Costs and slippage are always applied."""
+    if query.strategy not in STRATEGIES:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unknown_strategy",
+                "message": f"Unknown strategy {query.strategy!r}.",
+                "available": sorted(STRATEGIES),
+            },
+        )
+
+    series = _load_series(query)
+    result = Backtester(
+        STRATEGIES[query.strategy](),
+        risk_settings=RiskSettings(
+            account_equity=query.equity, max_gross_exposure_pct=2000.0
+        ),
+    ).run(series, warmup=query.warmup)
+
+    return {
+        "backtest": backtest_payload(result, query.strategy),
+        "series": series_payload(series, max_bars=1500),
+    }
+
+
+@app.post("/api/regime")
+def regime(query: SeriesQuery) -> dict[str, Any]:
+    """Causal HMM regime classification over the window.
+
+    Refits on a rolling window, so it is materially slower than `/api/analyse`
+    and is a separate call rather than part of the dashboard payload.
+    """
+    from axiom.quant.regime import RegimeModel
+
+    series = _load_series(query)
+    try:
+        regimes = RegimeModel().fit_causal(series)
+    except ImportError as exc:
+        raise HTTPException(
+            status_code=501,
+            detail={
+                "error": "hmm_unavailable",
+                "message": str(exc),
+                "hint": "pip install -e '.[quant]'",
+            },
+        ) from exc
+
+    payload = series_payload(series, max_bars=1500)
+    offset = payload["index_offset"]
+    return {
+        "series": payload,
+        "regime": {
+            "summary": regimes.summary(),
+            "labels": [
+                regimes.label_at(i).value for i in range(offset, len(series))
+            ],
+            "confidence": [
+                float(regimes.confidence_at(i)) for i in range(offset, len(series))
+            ],
+            "occupancy": {k.value: v for k, v in regimes.occupancy().items()},
+        },
+        "provenance": provenance_payload(series.provenance),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Static console. Mounted last so it cannot shadow an /api route.
+# ---------------------------------------------------------------------------
+
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.get("/")
+    def console() -> FileResponse:
+        return FileResponse(STATIC_DIR / "index.html")
+
+
+@app.exception_handler(ProviderError)
+def provider_error_handler(_request: Any, exc: ProviderError) -> JSONResponse:
+    """A data failure is a 503, not a 500 — it is upstream, and it is retryable."""
+    return JSONResponse(
+        status_code=503,
+        content={"detail": {"error": "provider_error", "message": str(exc)}},
+    )
+
+
+def serve(
+    host: str = "127.0.0.1",
+    port: int = 8000,
+    reload: bool = False,
+    log_level: Literal["critical", "error", "warning", "info", "debug"] = "info",
+) -> None:
+    """Run the console. Called by `axiom web`."""
+    import uvicorn
+
+    uvicorn.run(
+        "axiom.web.server:app" if reload else app,
+        host=host,
+        port=port,
+        reload=reload,
+        log_level=log_level,
+    )

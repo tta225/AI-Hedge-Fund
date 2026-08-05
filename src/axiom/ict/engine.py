@@ -53,6 +53,9 @@ class ICTConfig:
     order_block_lookback: int = orderblocks.DEFAULT_LOOKBACK
     #: Require the displacement leg to have left an FVG. Stricter, fewer blocks.
     require_order_block_imbalance: bool = False
+    #: Use the origin candle's full range as the order-block zone instead of
+    #: its body. The body is canonical; the range is a broader variant.
+    order_block_use_candle_range: bool = False
     #: Cluster half-width, in ATR units, for equal highs/lows.
     equality_atr: float = liquidity.DEFAULT_EQUALITY_ATR
     #: Minimum excursion beyond a pool to register as a sweep.
@@ -129,6 +132,8 @@ class ICTEngine:
             lookback=cfg.order_block_lookback,
             atr_period=cfg.atr_period,
             require_imbalance=cfg.require_order_block_imbalance,
+            use_candle_range=cfg.order_block_use_candle_range,
+            swings=pivots,
         )
 
         pools = liquidity.find_liquidity_pools(

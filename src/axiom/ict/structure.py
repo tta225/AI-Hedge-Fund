@@ -142,10 +142,63 @@ def displacement_legs(
 ) -> np.ndarray:
     """Boolean mask of bars whose range exceeds ``threshold`` ATRs.
 
-    Displacement is the energetic, one-directional delivery that leaves order
-    blocks and fair value gaps behind — the footprint the rest of the engine
-    hunts for.
+    A coarse volatility screen. For the canonical candle-level test — which
+    looks at body dominance and wick asymmetry rather than raw range — use
+    :func:`is_displacement_candle`.
     """
     atr = series.atr(atr_period)
     ranges = series.highs - series.lows
     return np.asarray(ranges >= threshold * np.maximum(atr, 1e-12))
+
+
+#: Canonical displacement thresholds.
+DISPLACEMENT_BODY_MULTIPLE = 1.5
+DISPLACEMENT_BODY_RATIO = 0.70
+DISPLACEMENT_MAX_OPPOSING_WICK = 0.20
+
+
+def is_displacement_candle(
+    series: OHLCVSeries,
+    *,
+    lookback: int = 20,
+    body_multiple: float = DISPLACEMENT_BODY_MULTIPLE,
+    body_ratio: float = DISPLACEMENT_BODY_RATIO,
+    max_opposing_wick: float = DISPLACEMENT_MAX_OPPOSING_WICK,
+) -> np.ndarray:
+    """Canonical per-candle displacement test.
+
+    A displacement candle satisfies all of:
+
+    * **wide body** — at least ``body_multiple`` times the trailing average body;
+    * **dominant body** — body covers at least ``body_ratio`` of the candle range;
+    * **minimal opposing wick** — the wick against the direction of travel is at
+      most ``max_opposing_wick`` of the range.
+
+    This differs from the ATR-range screen above in a way that matters: a bar can
+    have a huge range and still be indecision — a long wick both ways and a tiny
+    body. Range alone cannot tell those apart; body dominance can.
+
+    The trailing average excludes the candle itself, so the test is causal.
+    """
+    opens, highs, lows, closes = series.opens, series.highs, series.lows, series.closes
+    n = len(series)
+    ranges = np.maximum(highs - lows, 1e-12)
+    bodies = np.abs(closes - opens)
+
+    # Trailing mean of the previous `lookback` bodies, excluding the current bar.
+    cumulative = np.concatenate(([0.0], np.cumsum(bodies)))
+    avg_body = np.full(n, np.nan)
+    for i in range(1, n):
+        start = max(0, i - lookback)
+        avg_body[i] = (cumulative[i] - cumulative[start]) / (i - start)
+
+    bullish = closes > opens
+    upper_wick = highs - np.maximum(opens, closes)
+    lower_wick = np.minimum(opens, closes) - lows
+    opposing_wick = np.where(bullish, lower_wick, upper_wick)
+
+    with np.errstate(invalid="ignore"):
+        wide = bodies >= body_multiple * avg_body
+    dominant = bodies / ranges >= body_ratio
+    clean = opposing_wick / ranges <= max_opposing_wick
+    return np.asarray(np.nan_to_num(wide, nan=0.0).astype(bool) & dominant & clean)

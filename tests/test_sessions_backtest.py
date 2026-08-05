@@ -33,7 +33,15 @@ def ts(text: str) -> pd.Timestamp:
 
 class TestSessionClock:
     def test_ny_am_killzone_membership(self) -> None:
+        """Canonical NY AM killzone is 08:00-11:00 ET.
+
+        An earlier implementation had 07:00-10:00, which is an hour early on the
+        single most important window in the methodology. Pinned here against the
+        killzone times table in the ICT knowledge library.
+        """
         assert active_killzone(ts("2025-03-03 08:30")) is NY_AM_KILLZONE
+        assert active_killzone(ts("2025-03-03 10:30")) is NY_AM_KILLZONE
+        assert active_killzone(ts("2025-03-03 07:30")) is not NY_AM_KILLZONE
         assert active_killzone(ts("2025-03-03 06:00")) is None
 
     def test_london_killzone_membership(self) -> None:
@@ -44,9 +52,25 @@ class TestSessionClock:
         assert in_silver_bullet(ts("2025-03-03 11:30")) is None
 
     def test_windows_are_half_open(self) -> None:
-        # NY AM runs [07:00, 10:00); 10:00 belongs to the next window.
-        assert NY_AM_KILLZONE in active_windows(ts("2025-03-03 07:00"))
-        assert NY_AM_KILLZONE not in active_windows(ts("2025-03-03 10:00"))
+        # NY AM runs [08:00, 11:00); 11:00 belongs to the next window.
+        assert NY_AM_KILLZONE in active_windows(ts("2025-03-03 08:00"))
+        assert NY_AM_KILLZONE not in active_windows(ts("2025-03-03 11:00"))
+
+    def test_only_the_five_canonical_macros_exist(self) -> None:
+        """Macros are five named windows, not one per session hour."""
+        from axiom.core.sessions import MACRO_WINDOWS
+
+        assert len(MACRO_WINDOWS) == 5
+        assert {(w.start.hour, w.start.minute) for w in MACRO_WINDOWS} == {
+            (0, 50), (2, 50), (9, 50), (13, 50), (14, 50)
+        }
+
+    def test_silver_bullet_windows_match_the_canonical_table(self) -> None:
+        from axiom.core.sessions import SILVER_BULLETS
+
+        assert {(w.start.hour, w.end.hour) for w in SILVER_BULLETS} == {
+            (3, 4), (10, 11), (14, 15)
+        }
 
     def test_asia_window_crosses_midnight(self) -> None:
         from axiom.core.sessions import ASIA_KILLZONE

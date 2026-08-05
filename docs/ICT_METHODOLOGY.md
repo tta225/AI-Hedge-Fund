@@ -9,10 +9,17 @@ Every threshold below is a **prior, not an estimate**. They are starting points 
 defensible, not values fitted to data. Replace them with measured hit rates once you have
 run real market data through the backtester.
 
-> **Reconciliation note.** These definitions follow standard ICT methodology. Where your own
-> stratagem differs — different killzone bounds, different displacement thresholds, extra
-> confirmation requirements — those differences belong in `ICTConfig` and in the strategy
-> classes, and this document should be updated alongside them.
+> **Reconciliation status.** These definitions have been checked against the
+> [ICT Knowledge Library](https://github.com/SrsBlack/ict-knowledge-library) (226 concept
+> files, 2016–2026). Four corrections came out of that pass and are marked **[corrected]**
+> below. Where your own stratagem differs from the canonical source, those differences
+> belong in `ICTConfig` and in the strategy classes, and this document should be updated
+> alongside them.
+>
+> Not yet reconciled — the library covers these and AXIOM does not implement them:
+> CRT (candle range theory), quarterly theory, IPDA data ranges, rejection blocks,
+> turtle soup, propulsion/vacuum blocks, BPR (balanced price range), and the named
+> models in `31-models/`.
 
 ---
 
@@ -45,6 +52,10 @@ A structure event fires when a **close** breaks a prior confirmed swing.
   Wick-based breaks are handled by the liquidity module instead.
 * **Displacement = close-through distance ÷ ATR.** Default threshold `0.25`. This is what
   separates an energetic reversal from price drifting one tick past a pivot.
+* **[added]** The canonical *candle-level* displacement test is separate and now available
+  as `is_displacement_candle`: body ≥ 1.5× the trailing average body, body ≥ 70% of the
+  candle range, opposing wick ≤ 20% of range. Range alone cannot distinguish displacement
+  from indecision — a bar with long wicks both ways has a large range and no conviction.
 * **The first break with no established bias is a BOS**, not a CHoCH — it defines a trend
   rather than reversing one.
 
@@ -79,8 +90,9 @@ A structure event fires when a **close** breaks a prior confirmed swing.
 ## 4. Order blocks and breakers
 
 **Definition.** The last candle closing *against* the direction of a displacement leg that
-broke structure. Bullish order block = the final down-close candle before the up leg. Zone
-spans that candle's full high-to-low range.
+broke structure. Bullish order block = the final down-close candle before the up leg. The
+zone is that candle's **body** (open→close); its midpoint is the **mean threshold**, the
+entry depth ICT specifies.
 
 **Quality gates, in order of importance:**
 
@@ -94,8 +106,17 @@ spans that candle's full high-to-low range.
 
 * Search runs **backwards from the break**, up to `order_block_lookback` bars (default 12),
   so the block anchors to the leg that actually did the work regardless of its length.
-* Zone uses the **full candle range**, not just the body. The body-only convention is
-  defensible; it is a one-line change in `find_order_blocks`.
+* **[corrected]** Zone is the candle **body** (open→close), not the full range. The
+  canonical source is explicit that the body is the default and the range is a broader,
+  less precise variant — available via `use_candle_range=True`. The body midpoint is the
+  **mean threshold** (`OrderBlock.mean_threshold`), which is the entry depth ICT actually
+  specifies.
+* Stops use the **full candle** extreme (`protective_edge`), not the body edge. A stop at
+  the body edge sits inside the origin candle's own wick and is taken out by noise that
+  never invalidated the block.
+* **[corrected]** Pivot anchoring (canonical criterion 4) is now flagged as
+  `anchored_at_pivot` rather than ignored. Flagged, not required: pivot-anchored blocks
+  are the highest quality, but they are not the only valid ones.
 * `entry_edge` is the proximal side (first engagement); `protective_edge` is the distal side
   (natural stop anchor).
 
@@ -153,12 +174,12 @@ All windows are New York local time, DST-aware, and half-open `[start, end)`.
 |---|---|---|
 | Asia killzone | 20:00–00:00 | Range-building; its extremes become the day's first pools |
 | London killzone | 02:00–05:00 | Judas swing against the Asian range, then reversal |
-| **NY AM killzone** | 07:00–10:00 | Highest-probability window for the daily range extreme |
+| **NY AM killzone** | 08:00–11:00 | Highest-probability window for the daily range extreme **[corrected]** |
 | London close | 10:00–12:00 | Reversion as European desks flatten |
 | NY lunch | 12:00–13:00 | Low participation; breakouts here are suspect |
 | NY PM killzone | 13:30–16:00 | Afternoon expansion into the close |
 | Silver Bullet | 03:00–04:00, 10:00–11:00, 14:00–15:00 | One-hour FVG-entry windows |
-| Macros | :50–:10 each hour | Algorithmic reprice periods |
+| Macros | 00:50, 02:50, 09:50, 13:50, 14:50 (±10m) | Five named windows **[corrected]** — previously one per session hour |
 
 **Judas swing.** The opening manipulation: price runs one side of the prior range to collect
 stops, then reverses. `judas_swing()` returns the direction of the *false* move.

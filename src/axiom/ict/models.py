@@ -202,7 +202,15 @@ class OrderBlock(PriceZone):
     direction: Direction = Direction.NEUTRAL
     open_price: float = 0.0
     close_price: float = 0.0
+    #: Full candle extremes. The zone (`top`/`bottom`) is the **body**, per the
+    #: canonical definition, but stops are placed beyond the whole candle.
+    candle_high: float = 0.0
+    candle_low: float = 0.0
     displacement_atr: float = 0.0
+    #: True when the origin candle sits on a confirmed swing pivot. Canonical
+    #: criterion 4 — the highest-quality blocks are anchored to a pivot that
+    #: already had structural significance.
+    anchored_at_pivot: bool = False
     #: True when the displacement leg left an FVG — a far stronger block.
     has_imbalance: bool = False
     #: First bar to trade back into the zone.
@@ -227,14 +235,31 @@ class OrderBlock(PriceZone):
         return self.direction.opposite if self.is_breaker else self.direction
 
     @property
+    def mean_threshold(self) -> float:
+        """The canonical entry depth — the midpoint of the block's body.
+
+        ICT's ``MT``. Entering at the proximal edge fills earlier but is more
+        often run through; the mean threshold is the level the methodology
+        actually specifies.
+        """
+        return self.midpoint
+
+    @property
     def entry_edge(self) -> float:
         """Proximal edge — the first price at which the block is engaged."""
         return self.top if self.direction is Direction.BULLISH else self.bottom
 
     @property
     def protective_edge(self) -> float:
-        """Distal edge — beyond it the block has failed. Natural stop anchor."""
-        return self.bottom if self.direction is Direction.BULLISH else self.top
+        """Beyond this the block has failed. Natural stop anchor.
+
+        Uses the **full candle** extreme, not the body edge. The zone is the
+        body, but a stop tucked at the body edge sits inside the candle's own
+        wick and is taken out by noise that never invalidated anything.
+        """
+        if self.direction is Direction.BULLISH:
+            return self.candle_low if self.candle_low else self.bottom
+        return self.candle_high if self.candle_high else self.top
 
 
 @dataclass(slots=True)

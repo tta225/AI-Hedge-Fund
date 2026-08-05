@@ -89,7 +89,7 @@ LONDON_KILLZONE = SessionWindow(
     "London open killzone — judas swing against the Asian range, then reversal.",
 )
 NY_AM_KILLZONE = SessionWindow(
-    "ny_am_kz", time(7, 0), time(10, 0), WindowKind.KILLZONE,
+    "ny_am_kz", time(8, 0), time(11, 0), WindowKind.KILLZONE,
     "New York AM killzone — highest-probability window for the daily range extreme.",
 )
 LONDON_CLOSE_KILLZONE = SessionWindow(
@@ -137,13 +137,31 @@ FLOUT = SessionWindow(
 
 # --- Macros ------------------------------------------------------------------
 
-_MACRO_HOURS = ((2, 3), (8, 9), (9, 10), (10, 11), (11, 12), (13, 14), (14, 15), (15, 16))
-MACRO_WINDOWS: tuple[SessionWindow, ...] = tuple(
+# The five canonical macros. Earlier versions of this module generated a macro
+# for every hour of the session, which is wrong: ICT names five specific
+# :50-:10 windows, each anchored to a killzone. Generating eight diluted the
+# concept and meant `active_windows` reported macros that do not exist.
+MACRO_WINDOWS: tuple[SessionWindow, ...] = (
     SessionWindow(
-        f"macro_{h:02d}50", time(h, 50), time((h + 1) % 24, 10), WindowKind.MACRO,
-        "Algorithmic reprice window (:50-:10).",
-    )
-    for h, _ in _MACRO_HOURS
+        "macro_london_early", time(0, 50), time(1, 10), WindowKind.MACRO,
+        "London early macro — end of Asia, ahead of the London open killzone.",
+    ),
+    SessionWindow(
+        "macro_london_open", time(2, 50), time(3, 10), WindowKind.MACRO,
+        "London open macro — inside the London open killzone.",
+    ),
+    SessionWindow(
+        "macro_ny_pre_open", time(9, 50), time(10, 10), WindowKind.MACRO,
+        "New York pre-open macro — inside the NY AM killzone.",
+    ),
+    SessionWindow(
+        "macro_ny_first_pm", time(13, 50), time(14, 10), WindowKind.MACRO,
+        "First New York PM macro — inside the NY PM killzone.",
+    ),
+    SessionWindow(
+        "macro_ny_mid_pm", time(14, 50), time(15, 10), WindowKind.MACRO,
+        "Mid New York PM macro — inside the NY PM killzone.",
+    ),
 )
 
 KILLZONES: tuple[SessionWindow, ...] = (

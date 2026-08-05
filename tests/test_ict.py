@@ -169,17 +169,62 @@ class TestOrderBlocks:
             else:
                 assert closes[i] > opens[i]
 
-    def test_protective_edge_is_the_distal_side(
+    def test_zone_is_the_candle_body_not_its_range(
+        self, synthetic_series: OHLCVSeries
+    ) -> None:
+        """Canonical: the order block zone is the body, open to close."""
+        swings = find_swings(synthetic_series, strength=2)
+        events = detect_structure(synthetic_series, swings)
+        blocks = find_order_blocks(synthetic_series, events, [])
+        assert blocks
+        for block in blocks:
+            assert block.top == max(block.open_price, block.close_price)
+            assert block.bottom == min(block.open_price, block.close_price)
+            # The body always sits inside the candle.
+            assert block.candle_low <= block.bottom
+            assert block.top <= block.candle_high
+
+    def test_mean_threshold_is_the_body_midpoint(
         self, synthetic_series: OHLCVSeries
     ) -> None:
         swings = find_swings(synthetic_series, strength=2)
         events = detect_structure(synthetic_series, swings)
         for block in find_order_blocks(synthetic_series, events, []):
+            assert block.mean_threshold == pytest.approx(
+                (block.open_price + block.close_price) / 2
+            )
+
+    def test_protective_edge_uses_the_full_candle(
+        self, synthetic_series: OHLCVSeries
+    ) -> None:
+        """A stop at the body edge sits inside the candle's own wick."""
+        swings = find_swings(synthetic_series, strength=2)
+        events = detect_structure(synthetic_series, swings)
+        for block in find_order_blocks(synthetic_series, events, []):
             if block.direction is Direction.BULLISH:
-                assert block.protective_edge == block.bottom
+                assert block.protective_edge == block.candle_low
                 assert block.entry_edge == block.top
             else:
-                assert block.protective_edge == block.top
+                assert block.protective_edge == block.candle_high
+
+    def test_candle_range_variant_is_available(
+        self, synthetic_series: OHLCVSeries
+    ) -> None:
+        swings = find_swings(synthetic_series, strength=2)
+        events = detect_structure(synthetic_series, swings)
+        ranged = find_order_blocks(
+            synthetic_series, events, [], use_candle_range=True
+        )
+        assert ranged
+        for block in ranged:
+            assert block.top == block.candle_high
+            assert block.bottom == block.candle_low
+
+    def test_pivot_anchoring_is_flagged(self, synthetic_series: OHLCVSeries) -> None:
+        swings = find_swings(synthetic_series, strength=2)
+        events = detect_structure(synthetic_series, swings)
+        blocks = find_order_blocks(synthetic_series, events, [], swings=swings)
+        assert any(b.anchored_at_pivot for b in blocks)
 
     def test_breaker_inverts_polarity(self, synthetic_series: OHLCVSeries) -> None:
         swings = find_swings(synthetic_series, strength=2)

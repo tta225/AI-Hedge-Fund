@@ -379,13 +379,23 @@ def data_check() -> None:
     credential saved mid-session will not appear until a new session begins —
     this command makes that visible instead of surfacing as a 401 later.
     """
-    from axiom.core.credentials import describe_credentials
+    from axiom.core.credentials import describe_credentials, misnamed_credentials
     from axiom.data import AlpacaProvider, HuggingFaceProvider
     from axiom.data.registry import default_registry
 
     console.print("\n[bold]Credentials[/bold]")
     for line in describe_credentials().splitlines():
         console.print(f"  {line}")
+
+    # A key saved under the wrong name is present but unreadable, and reports
+    # identically to one that was never saved. Say which it is.
+    if near_misses := misnamed_credentials():
+        console.print(
+            "\n  [yellow]These are set but nothing reads them — the name is "
+            "wrong, not the key:[/yellow]"
+        )
+        for actual, canonical in near_misses:
+            console.print(f"    [yellow]{actual}[/yellow] → rename to [bold]{canonical}[/bold]")
 
     console.print("\n[bold]Market data sources[/bold]\n")
 

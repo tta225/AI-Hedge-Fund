@@ -19,6 +19,7 @@ from axiom.core.credentials import (
     describe_credentials,
     find_env_file,
     get_credential,
+    misnamed_credentials,
     parse_env_file,
     reset_cache,
 )
@@ -179,6 +180,63 @@ class TestPrecedence:
         monkeypatch.setenv("BLANK_KEY", "   ")
         reset_cache()
         assert get_credential("BLANK_KEY") is None
+
+
+class TestMisnamedCredentials:
+    """A key under the wrong name is indistinguishable from a key never saved.
+
+    Both report "not set", which sends people back to re-copy a key that was
+    always correct. These tests pin the distinction.
+    """
+
+    def test_flags_a_misnamed_alpaca_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ALPACA_KEY_ID", "PK000000000000000000")
+        reset_cache()
+        assert ("ALPACA_KEY_ID", "APCA_API_KEY_ID") in misnamed_credentials()
+
+    def test_routes_secrets_to_the_secret_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ALPACA_API_SECRET", "x" * 40)
+        reset_cache()
+        assert ("ALPACA_API_SECRET", "APCA_API_SECRET_KEY") in misnamed_credentials()
+
+    def test_accepted_names_are_not_flagged(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("APCA_API_KEY_ID", "PK000000000000000000")
+        monkeypatch.setenv("ALPACA_API_KEY", "PK000000000000000000")
+        reset_cache()
+        flagged = {name for name, _ in misnamed_credentials()}
+        assert "APCA_API_KEY_ID" not in flagged
+        assert "ALPACA_API_KEY" not in flagged
+
+    def test_configuration_is_not_mistaken_for_a_credential(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`ANTHROPIC_BASE_URL` is set in this very environment. It is not a key."""
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://example.invalid")
+        reset_cache()
+        assert "ANTHROPIC_BASE_URL" not in {n for n, _ in misnamed_credentials()}
+
+    def test_unrelated_variables_are_ignored(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("MY_APP_SECRET", "value")
+        reset_cache()
+        assert "MY_APP_SECRET" not in {n for n, _ in misnamed_credentials()}
+
+    def test_blank_value_is_not_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`.env.example` ships empty placeholders; those are not misnamed."""
+        monkeypatch.setenv("ALPACA_KEY_ID", "")
+        reset_cache()
+        assert "ALPACA_KEY_ID" not in {n for n, _ in misnamed_credentials()}
+
+    def test_never_returns_a_value(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        secret = "SUPERSECRETVALUE1234567890"
+        monkeypatch.setenv("ALPACA_KEY_ID", secret)
+        reset_cache()
+        assert secret not in str(misnamed_credentials())
 
 
 class TestProviderIntegration:

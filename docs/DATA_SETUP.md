@@ -107,11 +107,45 @@ It reports **presence and length only** — never the value, not even a prefix.
 If you prefer to set them in your Claude Code environment settings instead, that
 works too and takes precedence over `.env`.
 
-**One catch that costs people a lot of time:** environment variables are
+There is no settings page for this and no direct URL. The path is:
+
+1. Go to **claude.ai/code**
+2. Click the **cloud icon** in the row just above the message box — it shows the
+   environment name. For this project that is **`AI Hedge Fund`**, *not*
+   `Default`; saving to the wrong environment is the most common reason a key
+   never shows up
+3. Hover that environment → click the **gear icon**
+4. Find the **Environment variables** box
+5. Enter them in `.env` format, one per line:
+   ```
+   APCA_API_KEY_ID=PK7XXXXXXXXXXXXXXXXX
+   APCA_API_SECRET_KEY=abcdefghijklmnopqrstuvwxyz0123456789ABCD
+   ```
+6. Save
+7. **Start a new session**
+
+**Use paper keys only here** (Key ID starting `PK`). Anthropic's own docs are
+blunt about this: *"Anyone who uses the environment can read the values, and
+cloud environments have no dedicated secrets store, so don't add API keys or
+other credentials."* A paper key in a personal environment is a bounded risk —
+it is readable by your account and cannot touch real money. A live `AK` key is
+not, and does not belong here.
+
+### The three ways this fails, and how to tell them apart
+
+| `data-check` says | What actually happened |
+|---|---|
+| `not set` | The variable never arrived — saved to a different environment, or saved after this session started |
+| `not set` **plus a rename hint** | The key *is* there under a name nothing reads. Rename it; do not re-copy the key |
+| `rejected the credentials: HTTP 401` | It arrived and Alpaca refused it — now it is genuinely the key |
+
+The middle row is the one that wastes days, so `data-check` looks for it
+explicitly and prints the name it found alongside the name to use. It reads
+names only, never values.
+
+**The catch that costs people the most time:** environment variables are
 injected when the container *starts*. A secret saved mid-session does not appear
 until you **begin a new session** — which looks exactly like a rejected key.
-`data-check` distinguishes the two: "not set" means it never arrived, while
-"rejected the credentials: HTTP 401" means it arrived and Alpaca refused it.
 
 ---
 

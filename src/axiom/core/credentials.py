@@ -34,6 +34,27 @@ ENV_FILENAME = ".env"
 MAX_PARENTS = 4
 
 
+#: The variable names read for each credential, in priority order. Several
+#: spellings are accepted per credential because vendors are inconsistent about
+#: their own naming — Alpaca's docs use both ``APCA_API_KEY_ID`` and
+#: ``ALPACA_API_KEY``, and users reasonably copy whichever one they saw.
+CREDENTIAL_ALIASES: dict[str, tuple[str, ...]] = {
+    "Alpaca key id": ("APCA_API_KEY_ID", "ALPACA_API_KEY"),
+    "Alpaca secret": ("APCA_API_SECRET_KEY", "ALPACA_SECRET_KEY"),
+    "Hugging Face": ("HF_TOKEN", "HUGGINGFACE_TOKEN"),
+    "Anthropic": ("ANTHROPIC_API_KEY",),
+}
+
+#: Vendors whose credentials this project knows how to use.
+_PROVIDER_TOKENS = (
+    "ALPACA", "APCA", "HUGGINGFACE", "HUGGING_FACE",
+    "ANTHROPIC", "POLYGON", "DATABENTO", "FRED",
+)
+#: Substrings that distinguish a secret from ordinary configuration, so that
+#: e.g. ``ANTHROPIC_BASE_URL`` is not reported as a misnamed credential.
+_SECRET_TOKENS = ("KEY", "SECRET", "TOKEN", "PASSWORD")
+
+
 class CredentialSecurityError(RuntimeError):
     """Raised when a credential file is in a state that could leak it."""
 
@@ -147,13 +168,7 @@ def describe_credentials() -> str:
         f".env file : {path if path else 'not found'}",
     ]
 
-    groups: dict[str, tuple[str, ...]] = {
-        "Alpaca key id": ("APCA_API_KEY_ID", "ALPACA_API_KEY"),
-        "Alpaca secret": ("APCA_API_SECRET_KEY", "ALPACA_SECRET_KEY"),
-        "Hugging Face": ("HF_TOKEN", "HUGGINGFACE_TOKEN"),
-        "Anthropic": ("ANTHROPIC_API_KEY",),
-    }
-    for label, names in groups.items():
+    for label, names in CREDENTIAL_ALIASES.items():
         value = get_credential(*names)
         if value:
             # Length only — never the value, not even a prefix.
@@ -161,6 +176,52 @@ def describe_credentials() -> str:
         else:
             lines.append(f"  ✗ {label:<14} not set — tried {', '.join(names)}")
     return "\n".join(lines)
+
+
+def _canonical_name_for(upper: str) -> str:
+    """The name this project would read, for a variable that looks like ``upper``."""
+    wants_secret = "SECRET" in upper
+    if "ALPACA" in upper or "APCA" in upper:
+        return "APCA_API_SECRET_KEY" if wants_secret else "APCA_API_KEY_ID"
+    if "HUGGING" in upper or upper.startswith("HF_"):
+        return "HF_TOKEN"
+    if "ANTHROPIC" in upper:
+        return "ANTHROPIC_API_KEY"
+    for vendor in ("POLYGON", "DATABENTO", "FRED"):
+        if vendor in upper:
+            return f"{vendor}_API_KEY"
+    return ""
+
+
+def misnamed_credentials() -> list[tuple[str, str]]:
+    """Set variables that look like a supported credential under a name nothing reads.
+
+    This is the failure that is hardest to see from the outside. A key saved as
+    ``ALPACA_KEY`` is present, correct, and completely invisible — the report
+    says "not set", which reads as *the save did not work* rather than *the save
+    worked and the name is wrong*.
+
+    Returns ``(actual_name, name_to_use)`` pairs. **Names only** — the values are
+    never read, so this cannot leak a secret even into a log.
+    """
+    load_env_file()
+    known = {name for names in CREDENTIAL_ALIASES.values() for name in names}
+    found: list[tuple[str, str]] = []
+    for name in os.environ:
+        upper = name.upper()
+        if upper in known or not os.environ[name].strip():
+            continue
+        looks_like_a_vendor = any(
+            token in upper for token in _PROVIDER_TOKENS
+        ) or upper.startswith("HF_")
+        if not looks_like_a_vendor:
+            continue
+        if not any(token in upper for token in _SECRET_TOKENS):
+            continue  # configuration, not a credential
+        canonical = _canonical_name_for(upper)
+        if canonical and canonical.upper() != upper:
+            found.append((name, canonical))
+    return sorted(found)
 
 
 def reset_cache() -> None:

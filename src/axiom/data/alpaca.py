@@ -33,11 +33,11 @@ it is left for a deliberate, separate step.
 
 from __future__ import annotations
 
-import os
 from datetime import UTC
 
 import pandas as pd
 
+from axiom.core.credentials import get_credential
 from axiom.core.provenance import Provenance
 from axiom.core.types import AssetClass
 from axiom.data.base import BarRequest, BaseProvider, ProviderError, ProviderUnavailableError
@@ -78,13 +78,11 @@ class AlpacaProvider(BaseProvider):
                 mean anything, while dividend adjustment distorts the actual
                 traded levels that ICT analysis depends on.
         """
-        self.api_key = (
-            api_key or os.getenv("APCA_API_KEY_ID") or os.getenv("ALPACA_API_KEY")
+        self.api_key = api_key or get_credential(
+            "APCA_API_KEY_ID", "ALPACA_API_KEY"
         )
-        self.secret_key = (
-            secret_key
-            or os.getenv("APCA_API_SECRET_KEY")
-            or os.getenv("ALPACA_SECRET_KEY")
+        self.secret_key = secret_key or get_credential(
+            "APCA_API_SECRET_KEY", "ALPACA_SECRET_KEY"
         )
         self.feed = feed
         self.adjustment = adjustment
@@ -114,8 +112,11 @@ class AlpacaProvider(BaseProvider):
     def _fetch_raw(self, request: BarRequest) -> pd.DataFrame:
         if not self.is_available():
             raise ProviderUnavailableError(
-                "Alpaca credentials not found. Set APCA_API_KEY_ID and "
-                "APCA_API_SECRET_KEY (get them at app.alpaca.markets)."
+                "Alpaca credentials not found. Put them in a .env file at the "
+                "project root:\n"
+                "    APCA_API_KEY_ID=...\n"
+                "    APCA_API_SECRET_KEY=...\n"
+                "Get them at app.alpaca.markets. See docs/DATA_SETUP.md."
             )
 
         timeframe = _ALPACA_TIMEFRAMES.get(request.timeframe.label)
@@ -217,8 +218,10 @@ class AlpacaProvider(BaseProvider):
         if not self.is_available():
             return (
                 "✗ No Alpaca credentials found.\n"
-                "  Set APCA_API_KEY_ID and APCA_API_SECRET_KEY, then start a new\n"
-                "  session — environment variables are injected at container start."
+                "  Simplest fix: create a .env file at the project root with\n"
+                "    APCA_API_KEY_ID=your_key_id\n"
+                "    APCA_API_SECRET_KEY=your_secret_key\n"
+                "  .env is gitignored and takes effect immediately — no restart."
             )
         import json
         import urllib.error

@@ -13,17 +13,71 @@ comment. Anything in a transcript can end up in logs, and anything in a file can
 end up in a repository. Both are hard to undo — the only real fix for a leaked
 key is to revoke it.
 
-Credentials belong in **environment variables**, set through your Claude Code
-environment settings or your shell. Nothing below ever asks you to type a secret
-where it would be stored.
+---
 
-**Environment variables are injected when the container starts.** A secret saved
-mid-session will not appear until you **start a new session**. If a key seems to
-be ignored, that is almost always why — verify with:
+# The simplest way: a `.env` file
+
+**This is the recommended path.** It takes effect immediately, needs no session
+restart, and cannot be committed.
+
+### Step 1 — create the file
+
+In the project root (the folder containing `pyproject.toml`), create a file
+named exactly `.env`:
+
+```bash
+touch .env
+```
+
+### Step 2 — paste your keys into it
+
+```
+APCA_API_KEY_ID=PK7XXXXXXXXXXXXXXXXX
+APCA_API_SECRET_KEY=abcdefghijklmnopqrstuvwxyz0123456789ABCD
+```
+
+That is the whole format: `NAME=value`, one per line. No quotes needed, no
+spaces around the `=`. Add `HF_TOKEN=hf_...` on its own line if you are using a
+private Hugging Face dataset.
+
+### Step 3 — verify
 
 ```bash
 python -m axiom.cli data-check
 ```
+
+You should see:
+
+```
+Credentials
+  .env file : /path/to/AI-Hedge-Fund/.env
+    ✓ Alpaca key id  present (20 chars)
+    ✓ Alpaca secret  present (40 chars)
+```
+
+It reports **presence and length only** — never the value, not even a prefix.
+
+### Why this is safe
+
+* `.env` is in `.gitignore`, so `git add -A` will not pick it up.
+* The loader **refuses to run** if it finds `.env` tracked by git, and tells you
+  how to untrack it. A tracked credential file is one commit away from being
+  published.
+* If a platform environment variable is also set, **it wins** — a stale file can
+  never silently shadow a real secret.
+
+---
+
+## The alternative: platform environment variables
+
+If you prefer to set them in your Claude Code environment settings instead, that
+works too and takes precedence over `.env`.
+
+**One catch that costs people a lot of time:** environment variables are
+injected when the container *starts*. A secret saved mid-session does not appear
+until you **begin a new session** — which looks exactly like a rejected key.
+`data-check` distinguishes the two: "not set" means it never arrived, while
+"rejected the credentials: HTTP 401" means it arrived and Alpaca refused it.
 
 ---
 
@@ -41,12 +95,12 @@ The fastest route to real bars. Free tier is enough.
 
 ### Set them
 
-```bash
-APCA_API_KEY_ID=<your key id>
-APCA_API_SECRET_KEY=<your secret key>
-```
+Put them in `.env` as shown above. `ALPACA_API_KEY` / `ALPACA_SECRET_KEY` are
+accepted as alternative names, since Alpaca's own docs use both.
 
-`ALPACA_API_KEY` / `ALPACA_SECRET_KEY` also work.
+The **Key ID** starts with `PK` (paper) or `AK` (live) and is ~20 characters.
+The **Secret Key** is ~40 characters and is shown **once** at creation — if you
+did not copy it, generate a new pair rather than hunting for it.
 
 ### Verify, then use
 
@@ -80,7 +134,32 @@ AlpacaProvider(feed="sip")
 For `Tta225/OHLCV-1m-bucket`, which is **private** (confirmed: a public dataset
 resolves anonymously, this one returns 401).
 
-### Get a token
+### Easiest option: make the dataset public
+
+This removes the token requirement entirely — no credential to manage at all.
+
+1. Go to `huggingface.co/datasets/Tta225/OHLCV-1m-bucket`
+2. **Settings** tab
+3. Scroll to the bottom → **Change dataset visibility** → **Public**
+
+Then just:
+
+```python
+provider = HuggingFaceProvider("Tta225/OHLCV-1m-bucket")   # no token needed
+```
+
+**Is that safe?** It depends entirely on what is in the dataset:
+
+| Contents | Verdict |
+|---|---|
+| Raw OHLCV bars | **Public is fine.** Price history is not proprietary — the exchanges sell it and dozens of identical datasets are already public. |
+| Your own labels, annotations, or engineered features | **Keep it private.** That is your research, and it is exactly the part with value. |
+| Anything licensed from a vendor | **Keep it private.** Redistribution usually breaches the licence. |
+
+If it is plain 1-minute bars, making it public is the least complicated option
+and costs you nothing. If you added anything of your own, use a token.
+
+### Get a token (if keeping it private)
 
 1. [huggingface.co/settings/tokens](https://huggingface.co/settings/tokens)
 2. **New token** → type **Read** (write access is not needed and should not be
@@ -90,8 +169,10 @@ resolves anonymously, this one returns 401).
 
 ### Set it
 
-```bash
-HF_TOKEN=<your read token>
+Add one line to the same `.env`:
+
+```
+HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
 ```
 
 ### Install the extra

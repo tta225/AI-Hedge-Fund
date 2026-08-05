@@ -379,8 +379,13 @@ def data_check() -> None:
     credential saved mid-session will not appear until a new session begins —
     this command makes that visible instead of surfacing as a 401 later.
     """
+    from axiom.core.credentials import describe_credentials
     from axiom.data import AlpacaProvider, HuggingFaceProvider
     from axiom.data.registry import default_registry
+
+    console.print("\n[bold]Credentials[/bold]")
+    for line in describe_credentials().splitlines():
+        console.print(f"  {line}")
 
     console.print("\n[bold]Market data sources[/bold]\n")
 

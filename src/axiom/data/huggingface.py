@@ -22,10 +22,9 @@ only as honest as what it is told at the boundary.
 
 from __future__ import annotations
 
-import os
-
 import pandas as pd
 
+from axiom.core.credentials import get_credential
 from axiom.core.provenance import DataKind, Provenance
 from axiom.core.series import OHLCVSeries
 from axiom.core.timeframe import Timeframe
@@ -80,7 +79,7 @@ class HuggingFaceProvider(BaseProvider):
         self.dataset = dataset
         self.split = split
         self.config = config
-        self.token = token or os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_TOKEN")
+        self.token = token or get_credential("HF_TOKEN", "HUGGINGFACE_TOKEN")
         self.symbol_column = symbol_column
         self.timestamp_column = timestamp_column
         self.kind = kind

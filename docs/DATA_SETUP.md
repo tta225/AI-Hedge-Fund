@@ -15,36 +15,50 @@ key is to revoke it.
 
 ---
 
-# The simplest way: a `.env` file
+# The simplest way: `axiom setup`
 
-**This is the recommended path.** It takes effect immediately, needs no session
-restart, and cannot be committed.
-
-### Step 1 — create the file
-
-In the project root (the folder containing `pyproject.toml`), create a file
-named exactly `.env`:
+Run one command and paste each key when prompted. Nothing you type is displayed,
+and nothing lands in your shell history.
 
 ```bash
-touch .env
+cd ~/AI-Hedge-Fund
+pip install -e .
+python -m axiom.cli setup
 ```
 
-### Step 2 — paste your keys into it
+It asks for three things in turn:
+
+```
+Alpaca Key ID (starts with PK, about 20 characters)
+  paste here:
+
+Alpaca Secret Key (about 40 characters)
+  paste here:            <- hidden as you type
+
+Hugging Face token (starts with hf_ — leave blank if your dataset is public)
+  paste here:            <- press Enter to skip
+```
+
+Then it writes `.env`, locks it to owner-only permissions, and immediately
+verifies the keys. Re-run it any time; press Enter at a prompt to keep an
+existing value.
+
+### Checking later
+
+```bash
+python -m axiom.cli data-check
+```
+
+### Doing it by hand instead
+
+If you would rather write the file yourself, create `.env` in the project root:
 
 ```
 APCA_API_KEY_ID=PK7XXXXXXXXXXXXXXXXX
 APCA_API_SECRET_KEY=abcdefghijklmnopqrstuvwxyz0123456789ABCD
 ```
 
-That is the whole format: `NAME=value`, one per line. No quotes needed, no
-spaces around the `=`. Add `HF_TOKEN=hf_...` on its own line if you are using a
-private Hugging Face dataset.
-
-### Step 3 — verify
-
-```bash
-python -m axiom.cli data-check
-```
+`NAME=value`, one per line, no quotes, no spaces around the `=`.
 
 You should see:
 

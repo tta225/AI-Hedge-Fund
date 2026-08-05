@@ -17,6 +17,10 @@ AXIOM is a systematic trading platform built around three ideas:
 ```bash
 python -m pip install -e ".[dev]"
 
+# Save your API keys (prompts you; input is hidden). Optional — everything
+# below runs offline with --synthetic.
+python -m axiom.cli setup
+
 # Full offline demonstration: terminal + ICT engine + backtest, no API keys.
 python -m axiom.cli demo
 

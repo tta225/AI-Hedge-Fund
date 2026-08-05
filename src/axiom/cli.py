@@ -421,6 +421,77 @@ def data_check() -> None:
         )
 
 
+@app.command()
+def setup() -> None:
+    """Interactively save your API keys. Run this once.
+
+    Prompts for each credential, writes them to a gitignored `.env` file with
+    owner-only permissions, and verifies them immediately. Secrets are never
+    echoed to the screen and never appear in shell history.
+    """
+    import stat
+    from pathlib import Path
+
+    from axiom.core.credentials import find_env_file, parse_env_file, reset_cache
+
+    console.print("\n[bold cyan]AXIOM credential setup[/bold cyan]")
+    console.print(
+        "[dim]Keys are saved to a local .env file that git cannot see.\n"
+        "Nothing you type here is displayed or logged.[/dim]\n"
+    )
+
+    root = Path.cwd()
+    if not (root / "pyproject.toml").exists():
+        found = find_env_file()
+        root = found.parent if found else root
+    env_path = root / ".env"
+
+    existing = parse_env_file(env_path) if env_path.exists() else {}
+    if existing:
+        console.print(f"[yellow]Found an existing {env_path}[/yellow]")
+        console.print("[dim]Press Enter at any prompt to keep the current value.[/dim]\n")
+
+    fields = [
+        ("APCA_API_KEY_ID", "Alpaca Key ID", "starts with PK, about 20 characters", False),
+        ("APCA_API_SECRET_KEY", "Alpaca Secret Key", "about 40 characters", True),
+        ("HF_TOKEN", "Hugging Face token", "starts with hf_ — leave blank if your dataset is public", True),
+    ]
+
+    values = dict(existing)
+    for name, label, hint, secret in fields:
+        current = existing.get(name, "")
+        suffix = f" [{len(current)} chars saved]" if current else ""
+        console.print(f"[bold]{label}[/bold] [dim]({hint})[/dim]{suffix}")
+        entered = typer.prompt("  paste here", default="", hide_input=secret,
+                               show_default=False).strip()
+        if entered:
+            values[name] = entered
+        elif current:
+            values[name] = current
+        console.print()
+
+    lines = [
+        "# AXIOM credentials. Gitignored — never commit this file.",
+        "# Regenerate with: python -m axiom.cli setup",
+        "",
+    ]
+    lines += [f"{k}={v}" for k, v in values.items() if v]
+    env_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Owner read/write only: other users on the machine cannot read the keys.
+    env_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+    console.print(f"[green]✓ Saved to {env_path}[/green] [dim](permissions 600)[/dim]")
+
+    gitignore = root / ".gitignore"
+    if gitignore.exists() and ".env" not in gitignore.read_text().splitlines():
+        gitignore.write_text(gitignore.read_text().rstrip() + "\n.env\n")
+        console.print("[green]✓ Added .env to .gitignore[/green]")
+
+    reset_cache()
+    console.print("\n[bold]Checking them now...[/bold]")
+    data_check()
+
+
 def main() -> None:
     app()
 

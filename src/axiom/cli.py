@@ -371,6 +371,51 @@ def research(
     console.print(outcome.render())
 
 
+@app.command("data-check")
+def data_check() -> None:
+    """Report which market data sources are reachable and credentialed.
+
+    Run this first. Environment variables are injected at container start, so a
+    credential saved mid-session will not appear until a new session begins —
+    this command makes that visible instead of surfacing as a 401 later.
+    """
+    from axiom.data import AlpacaProvider, HuggingFaceProvider
+    from axiom.data.registry import default_registry
+
+    console.print("\n[bold]Market data sources[/bold]\n")
+
+    alpaca = AlpacaProvider()
+    console.print("[bold cyan]Alpaca[/bold cyan]")
+    for line in alpaca.check_credentials().splitlines():
+        console.print(f"  {line}")
+
+    console.print("\n[bold cyan]Hugging Face[/bold cyan]")
+    hf = HuggingFaceProvider("placeholder/placeholder")
+    if not hf.is_available():
+        # `[huggingface]` is rich markup syntax; escape the bracket or the
+        # extra name is silently swallowed from the output.
+        console.print(
+            r"  ✗ datasets not installed — pip install -e '.\[huggingface]'"
+        )
+    elif not hf.token:
+        console.print("  ✗ no HF_TOKEN — required for private datasets")
+    else:
+        console.print("  ✓ token present and datasets installed")
+
+    registry = default_registry()
+    available = [p.name for p in registry.available()]
+    console.print("\n[bold cyan]Registry[/bold cyan]")
+    console.print(f"  order     : {[p.name for p in registry.providers]}")
+    console.print(f"  usable now: {available or '[red]none[/red]'}")
+    if not available:
+        console.print(
+            "\n[yellow]No real data source is usable. Everything still runs with "
+            "--synthetic, but synthetic results are a correctness check, never "
+            "evidence.[/yellow]\n"
+            "[dim]See docs/DATA_SETUP.md.[/dim]"
+        )
+
+
 def main() -> None:
     app()
 

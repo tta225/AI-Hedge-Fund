@@ -16,10 +16,11 @@ run real market data through the backtester.
 > belong in `ICTConfig` and in the strategy classes, and this document should be updated
 > alongside them.
 >
-> Not yet reconciled — the library covers these and AXIOM does not implement them:
-> CRT (candle range theory), quarterly theory, IPDA data ranges, rejection blocks,
-> turtle soup, propulsion/vacuum blocks, BPR (balanced price range), and the named
-> models in `31-models/`.
+> Since implemented from the library: CRT, IPDA data ranges, turtle soup, and
+> rejection blocks (see §10-13 below).
+>
+> Still not implemented: quarterly theory, propulsion/vacuum blocks, BPR
+> (balanced price range), and the named models in `31-models/`.
 
 ---
 
@@ -229,3 +230,88 @@ order blocks required to have left an imbalance).
 
 Changing thresholds changes what the engine sees. Change them deliberately, one at a time,
 and re-measure — tuning several at once on a single sample is how curve-fitting starts.
+
+
+---
+
+## 10. Rejection blocks
+
+**Definition.** A candle whose **wick** documents a level being tested and refused.
+
+**The distinction from an order block is the whole point:** an order block references
+the **body** (where absorption happened); a rejection block references the **wick**
+(where price was refused). Different objects from different parts of the same candle.
+
+**Criteria (all required):** wick ≥ 60% of candle range · wick tip reaches a **known
+liquidity level** · close at the far end of the range · next candle displaces in the
+rejection direction.
+
+**Judgement call.** The level requirement is not optional and is the criterion most
+implementations drop. Without it, the detector returns every long-wicked candle on the
+chart. `find_rejection_blocks` takes liquidity pools and returns nothing without them.
+
+**Confirmation** is `origin + 1` — criterion 4 needs the next candle.
+
+---
+
+## 11. Turtle soup
+
+**Definition.** A failed breakout: a known level is violated, reclaimed within 1–3
+bars, and price then displaces in the opposite direction.
+
+**Relationship to liquidity sweeps.** Deliberately a separate object:
+
+| | Sweep | Turtle soup |
+|---|---|---|
+| Reclaim | same bar | within 1–3 bars |
+| Displacement | not required | **required** |
+
+Turtle soup is the stricter, complete pattern — it insists the market actually did
+something after reclaiming. Every resolving sweep is a candidate; not every sweep
+resolves.
+
+**Confirmation** is credited at the displacement bar, the first point the whole pattern
+is knowable.
+
+---
+
+## 12. CRT — Candle Range Theory
+
+**⚠️ Not ICT-original.** Popularised in 2024 by Romeo and TTrades. ICT's public
+position: *"based on my ideas but not my concept."* Implemented because the community
+conflates the two, and stating the attribution is better than losing it.
+
+**Mechanic.** Take a **completed** higher-timeframe candle; a later bar sweeps one bound
+and closes back inside; target the opposite bound.
+
+**The lookahead trap.** Reading an HTF candle's high/low *while inside that candle* puts
+the traded move into its own reference range. This module only uses completed HTF
+candles, and `CRTSetup.reference_close_index` records when the reference became
+knowable. Pinned by test.
+
+**Judgement calls.** CRT is materially less standardised than ICT — selection rules vary
+between teachers. The time-of-day filter (02:00/03:00/05:00/09:00/13:00 NY) is
+**opt-in**, because its canonical values are genuinely disputed. `reward_risk()` takes a
+`stop_buffer`: without one, a single-tick sweep yields an R:R in the tens that no real
+stop could achieve.
+
+---
+
+## 13. IPDA data ranges
+
+**Definition.** Highest high and lowest low over trailing **20 / 40 / 60 trading days** —
+the longest-horizon liquidity references on the chart.
+
+**Two details the canonical source is specific about, both easy to get wrong:**
+
+* **trading days, not calendar days.** A 20-calendar-day window covers roughly 14
+  trading days; over 60 days the gap is nearly three weeks of data.
+* **wick extremes, not closes.** The level is where price *traded* — that is where the
+  stops are.
+
+**Judgement call.** `ipda_bias` is contrarian to position, like the dealing-range
+filter: above 70% of the 20-day range the draw is more plausibly the low. A filter, not
+a signal.
+
+IPDA itself is an **interpretive model**, not a documented protocol. The lookback levels
+are the operationally useful part and are what is implemented.

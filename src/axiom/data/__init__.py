@@ -1,5 +1,6 @@
 """Market data layer."""
 
+from axiom.data.alpaca import AlpacaProvider
 from axiom.data.base import (
     BarRequest,
     BaseProvider,
@@ -13,7 +14,8 @@ from axiom.data.registry import DataRegistry, default_registry, research_registr
 from axiom.data.synthetic import SyntheticProvider
 
 __all__ = [
-    "BarRequest", "BaseProvider", "CSVProvider", "DataRegistry", "HuggingFaceProvider",
+    "AlpacaProvider", "BarRequest", "BaseProvider", "CSVProvider", "DataRegistry",
+    "HuggingFaceProvider",
     "MarketDataProvider",
     "OpenBBProvider", "ProviderError", "ProviderUnavailableError", "SyntheticProvider",
     "YFinanceProvider", "default_registry", "research_registry",

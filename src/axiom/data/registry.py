@@ -5,6 +5,7 @@ from __future__ import annotations
 from axiom.core.series import OHLCVSeries
 from axiom.core.timeframe import Timeframe
 from axiom.core.types import Instrument
+from axiom.data.alpaca import AlpacaProvider
 from axiom.data.base import BarRequest, MarketDataProvider, ProviderError
 from axiom.data.providers import CSVProvider, YFinanceProvider
 from axiom.data.synthetic import SyntheticProvider
@@ -62,10 +63,16 @@ class DataRegistry:
 
 
 def default_registry(data_root: str | None = None) -> DataRegistry:
-    """Registry wired to the free adapters: local CSV first, then yfinance."""
+    """Registry wired to the available free adapters, best first.
+
+    Order: local CSV (fastest, fully controlled) → Alpaca (real keyed market
+    data, skipped silently when unkeyed) → yfinance (unofficial endpoint, last
+    resort). Synthetic is deliberately absent; see :class:`DataRegistry`.
+    """
     registry = DataRegistry()
     if data_root:
         registry.register(CSVProvider(data_root))
+    registry.register(AlpacaProvider())
     registry.register(YFinanceProvider())
     return registry
 

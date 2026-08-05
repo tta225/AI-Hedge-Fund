@@ -20,6 +20,8 @@ dependencies = [
 [project.optional-dependencies]
 # Free / low-cost market data adapters.
 yfinance = ["yfinance>=0.2.40"]
+# The Alpaca adapter speaks REST directly and needs no SDK; this extra
+# is only for users who want alpaca-py for other purposes.
 alpaca = ["alpaca-py>=0.21"]
 crypto = ["ccxt>=4.3"]
 # Load your own training data from the Hugging Face Hub.

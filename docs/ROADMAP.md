@@ -34,8 +34,13 @@ Honest status. Nothing below is described as finished unless it is finished and 
 | **ICT Unicorn model** — breaker ∩ FVG overlap | ✅ tested |
 | **ICT Power of Three** — accumulation/manipulation/distribution, causal | ✅ tested |
 | **Hugging Face adapter** — load your own datasets with provenance | ✅ |
+| **Alpaca adapter** — real US equity/crypto bars, REST, paginated | ✅ |
+| **ICT rejection blocks** — wick-based zone, level-anchored | ✅ tested |
+| **ICT turtle soup** — failed breakout, reclaim + displacement | ✅ tested |
+| **CRT** — HTF candle range sweep (community-attributed, not ICT-original) | ✅ tested |
+| **IPDA data ranges** — 20/40/60 trading-day extremes, causal | ✅ tested |
 
-**196 tests passing.**
+**233 tests passing.**
 
 ---
 
@@ -133,7 +138,11 @@ Multi-instrument, correlation-aware exposure limits, cross-instrument risk budge
 * Optimal trade entry automation across timeframes
 * ~~Power of Three~~ **built** (`axiom.ict.power_of_three`)
 * ~~Unicorn model~~ **built** (`axiom.ict.find_unicorns`)
-* IPDA data ranges (20/40/60-day lookbacks)
+* ~~IPDA data ranges~~ **built** (`axiom.ict.compute_ipda_levels`)
+* ~~Turtle soup~~ **built** (`axiom.ict.find_turtle_soups`)
+* ~~Rejection blocks~~ **built** (`axiom.ict.find_rejection_blocks`)
+* ~~CRT~~ **built** (`axiom.ict.find_crt_setups`) — community-attributed
+* Quarterly theory, propulsion/vacuum blocks, BPR, named models in `31-models/`
 * Weekly and daily bias templates
 * Standard-deviation projections wired into targets
 

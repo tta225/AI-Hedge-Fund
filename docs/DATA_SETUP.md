@@ -21,7 +21,27 @@ Run one command and paste each key when prompted. Nothing you type is displayed,
 and nothing lands in your shell history.
 
 ```bash
-cd ~/AI-Hedge-Fund
+cd /home/user/AI-Hedge-Fund
+pip install -e .
+python -m axiom.cli setup
+```
+
+**Use the absolute path.** On this machine `~` is `/root`, while the project
+lives under `/home/user/` — so `cd ~/AI-Hedge-Fund` fails with "no such file or
+directory". If you are unsure where the project is:
+
+```bash
+find / -name pyproject.toml -path '*AI-Hedge-Fund*' 2>/dev/null
+```
+
+### On your own computer instead
+
+The code lives on a branch, not `main`, so the checkout line is not optional:
+
+```bash
+git clone https://github.com/tta225/AI-Hedge-Fund.git
+cd AI-Hedge-Fund
+git checkout claude/ai-hedge-fund-platform-vxebwq
 pip install -e .
 python -m axiom.cli setup
 ```

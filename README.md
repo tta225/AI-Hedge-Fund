@@ -14,6 +14,9 @@ AXIOM is a systematic trading platform built around three ideas:
 
 ## Quick start
 
+> **Note:** the work is on the branch `claude/ai-hedge-fund-platform-vxebwq`,
+> not `main`. Clone, then `git checkout claude/ai-hedge-fund-platform-vxebwq`.
+
 ```bash
 python -m pip install -e ".[dev]"
 

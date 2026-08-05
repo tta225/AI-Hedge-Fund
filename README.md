@@ -8,7 +8,9 @@ AXIOM is a systematic trading platform built around three ideas:
 2. **A backtest that cannot be trusted is worse than no backtest.** Anti-lookahead discipline, mandatory data provenance, and always-on transaction costs are enforced by the type system and the test suite — not by convention.
 3. **Nothing reaches a live venue by accident.** Paper and simulation are the default. Live routing requires an explicit mode, an explicit confirmation phrase, and a disengaged kill switch.
 
-> ⚠️ **This is research and engineering infrastructure, not financial advice.** It makes no claim of profitability, and none of the bundled strategies has been validated on real market data. Backtest results on generated data are correctness checks and nothing more. Paper trade first. Only risk capital you can afford to lose.
+> ⚠️ **This is research and engineering infrastructure, not financial advice.** It makes no claim of profitability, and none of the bundled strategies is a proven edge. Paper trade first. Only risk capital you can afford to lose.
+
+> 📉 **The first measurement on real market data found no edge.** Across ~38,700 real bars, fair value gaps and order blocks show **zero lift over a control band that carries no methodological meaning**, and liquidity sweeps lean the *wrong way* in all four datasets. Read [`docs/REAL_DATA_FINDINGS.md`](docs/REAL_DATA_FINDINGS.md) before trusting anything here.
 
 ---
 
@@ -35,6 +37,10 @@ python -m axiom.cli terminal --symbol ES --synthetic
 
 # Backtest, costs always applied
 python -m axiom.cli backtest --strategy silver-bullet --synthetic --days 120
+
+# Real bars, no credentials — Coinbase serves keyless public candles
+python -m axiom.cli cache-data
+python -m axiom.cli base-rates --data-root data/cache
 
 # The five-agent pipeline (Research → Debate → Backtest → Risk → Review)
 python -m axiom.cli pipeline --synthetic
@@ -203,5 +209,8 @@ anti-lookahead properties, risk limits, the fill model, and end-to-end backtest 
 Foundation complete and working end to end. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for what
 is built, what is deliberately stubbed, and what comes next.
 
-**No strategy in this repository has been validated on real market data.** The bundled ICT
-strategies are reference implementations of the methodology, not proven edges.
+**The ICT features have now been measured on real market data, and they did not beat their
+controls.** See [`docs/REAL_DATA_FINDINGS.md`](docs/REAL_DATA_FINDINGS.md). The measurement is
+crypto-only, so every session-anchored concept — killzones, judas swings, Power of Three, the
+Silver Bullet window — remains untested. The bundled strategies are reference implementations of
+the methodology, not proven edges.

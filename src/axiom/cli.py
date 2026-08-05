@@ -16,6 +16,7 @@ from axiom.core.series import OHLCVSeries
 from axiom.core.timeframe import Timeframe
 from axiom.core.types import get_instrument
 from axiom.data.base import BarRequest, ProviderError
+from axiom.data.providers import CSVProvider
 from axiom.data.registry import default_registry
 from axiom.data.synthetic import SyntheticProvider
 from axiom.ict.engine import ICTConfig, ICTEngine
@@ -500,6 +501,63 @@ def setup() -> None:
     reset_cache()
     console.print("\n[bold]Checking them now...[/bold]")
     data_check()
+
+
+@app.command("base-rates")
+def base_rates(
+    symbol: str = typer.Option("BTC-USD", help="Instrument symbol."),
+    timeframe: str = typer.Option("1h"),
+    days: int = typer.Option(365),
+    horizon: int = typer.Option(48, help="Forward bars over which an outcome is judged."),
+    synthetic: bool = typer.Option(False),
+    seed: int = typer.Option(7),
+    data_root: str = typer.Option("", help="Read from a local CSV cache instead."),
+) -> None:
+    """Measure how often ICT features actually do what they claim.
+
+    Every rate is reported against a control, because a fill rate without one
+    measures volatility and calls it an edge. See docs/REAL_DATA_FINDINGS.md
+    for what the controls did to the priors.
+    """
+    from axiom.research.base_rates import measure_base_rates
+
+    if data_root:
+        series = CSVProvider(data_root).fetch(get_instrument(symbol), timeframe, days=days)
+    else:
+        series = _load_series(symbol, timeframe, days, synthetic, seed)
+
+    console.print(measure_base_rates(series, horizon=horizon).render())
+
+
+@app.command("cache-data")
+def cache_data(
+    symbols: str = typer.Option("BTC-USD,ETH-USD,SOL-USD", help="Comma-separated."),
+    timeframe: str = typer.Option("1h"),
+    days: int = typer.Option(365),
+    out: str = typer.Option("data/cache", help="Directory to write CSVs into."),
+) -> None:
+    """Download real bars to a local CSV cache. No credentials needed.
+
+    Coinbase Exchange serves keyless public candles, which is what makes the
+    measurements in docs/REAL_DATA_FINDINGS.md reproducible without anyone
+    having to hold an API key. The cache itself is gitignored — market data is
+    the venue's to distribute, not this repository's.
+    """
+    from axiom.data.coinbase import CoinbaseProvider
+
+    provider = CoinbaseProvider(max_requests=600)
+    for symbol in (s.strip() for s in symbols.split(",") if s.strip()):
+        instrument = get_instrument(symbol)
+        try:
+            series = provider.fetch(instrument, timeframe, days=days)
+        except ProviderError as exc:
+            console.print(f"[red]{symbol}: {exc}[/red]")
+            continue
+        path = CSVProvider.write(series, f"{out}/{symbol}_{timeframe}.csv")
+        console.print(
+            f"[green]✓[/green] {symbol:<9} {timeframe:<4} "
+            f"{len(series):>6,} bars → {path}"
+        )
 
 
 def main() -> None:

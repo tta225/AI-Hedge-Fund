@@ -247,15 +247,39 @@ SPY = Instrument("SPY", AssetClass.EQUITY, "ARCA", tick_size=0.01, point_value=1
 QQQ = Instrument("QQQ", AssetClass.EQUITY, "NASDAQ", tick_size=0.01, point_value=1.0,
                  description="Invesco QQQ Trust")
 
+# Crypto trades continuously, so its "trading day" is a convention rather than
+# a fact. UTC is used because that is the boundary the venues report on; any
+# ICT session concept applied here inherits that arbitrariness and should be
+# read with suspicion. See docs/REAL_DATA_FINDINGS.md.
+BTCUSD = Instrument("BTC-USD", AssetClass.CRYPTO, "COINBASE", tick_size=0.01,
+                    point_value=1.0, session_tz="UTC", description="Bitcoin / US Dollar")
+ETHUSD = Instrument("ETH-USD", AssetClass.CRYPTO, "COINBASE", tick_size=0.01,
+                    point_value=1.0, session_tz="UTC", description="Ether / US Dollar")
+SOLUSD = Instrument("SOL-USD", AssetClass.CRYPTO, "COINBASE", tick_size=0.01,
+                    point_value=1.0, session_tz="UTC", description="Solana / US Dollar")
+
 #: Registry of built-in instruments, keyed by symbol.
 INSTRUMENTS: dict[str, Instrument] = {
-    i.symbol: i for i in (ES, NQ, YM, CL, GC, EURUSD, GBPUSD, SPY, QQQ)
+    i.symbol: i
+    for i in (ES, NQ, YM, CL, GC, EURUSD, GBPUSD, SPY, QQQ, BTCUSD, ETHUSD, SOLUSD)
 }
+
+#: Quote currencies that identify a crypto pair written as ``BASE-QUOTE``.
+_CRYPTO_QUOTES = ("USD", "USDT", "USDC", "EUR", "GBP")
 
 
 def get_instrument(symbol: str) -> Instrument:
-    """Look up a built-in instrument, falling back to a generic equity spec."""
+    """Look up a built-in instrument, falling back to a generic spec.
+
+    An unknown ``BASE-QUOTE`` symbol is treated as crypto. Getting the asset
+    class wrong is not cosmetic: it decides which providers will serve the
+    symbol and which session calendar applies to it.
+    """
     key = symbol.upper()
     if key in INSTRUMENTS:
         return INSTRUMENTS[key]
+    base, sep, quote = key.partition("-")
+    if sep and base and quote in _CRYPTO_QUOTES:
+        return Instrument(key, AssetClass.CRYPTO, tick_size=0.01, point_value=1.0,
+                          session_tz="UTC")
     return Instrument(key, AssetClass.EQUITY, tick_size=0.01, point_value=1.0)

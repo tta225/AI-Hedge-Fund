@@ -131,3 +131,51 @@ class TestInstrumentResolution:
 
     def test_crypto_uses_a_utc_session(self) -> None:
         assert get_instrument("BTC-USD").session_tz == "UTC"
+
+
+class TestReachabilityProbe:
+    """`is_available` is unconditionally true, so only a probe knows the truth.
+
+    On a restricted network those two answers disagree, and the disagreement is
+    exactly what `data-check` exists to surface.
+    """
+
+    def test_available_does_not_imply_reachable(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import urllib.error
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise urllib.error.URLError("Tunnel connection failed: 403 Forbidden")
+
+        monkeypatch.setattr("urllib.request.urlopen", refuse)
+        provider = CoinbaseProvider()
+
+        assert provider.is_available() is True
+        assert provider.check_reachable().startswith("✗")
+        assert "403" in provider.check_reachable()
+
+    def test_reports_reachable_when_the_endpoint_answers(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        class _Response:
+            def read(self) -> bytes:
+                return b'{"id": "BTC-USD", "status": "online"}'
+
+            def __enter__(self) -> _Response:
+                return self
+
+            def __exit__(self, *_exc: object) -> None:
+                return None
+
+        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: _Response())
+        assert CoinbaseProvider().check_reachable().startswith("✓")
+
+    def test_an_http_error_names_the_status_code(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import urllib.error
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise urllib.error.HTTPError("url", 503, "unavailable", {}, None)  # type: ignore[arg-type]
+
+        monkeypatch.setattr("urllib.request.urlopen", refuse)
+        assert "503" in CoinbaseProvider().check_reachable()

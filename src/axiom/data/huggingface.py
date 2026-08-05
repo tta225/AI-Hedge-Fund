@@ -93,6 +93,84 @@ class HuggingFaceProvider(BaseProvider):
             return False
         return True
 
+    def _headers(self) -> dict[str, str]:
+        headers = {"User-Agent": "axiom"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        return headers
+
+    def check_token(self) -> str:
+        """Verify the token authenticates, without naming a dataset.
+
+        Reports the account the token belongs to. That matters more than it
+        looks: a token is scoped to an owner, and a token for the wrong account
+        authenticates perfectly while seeing none of your repositories.
+        """
+        import json
+        import urllib.error
+        import urllib.request
+
+        if not self.is_available():
+            return "✗ datasets not installed — pip install -e '.[huggingface]'"
+        if not self.token:
+            return "? no HF_TOKEN — fine for public datasets, required for private ones"
+
+        try:
+            identity = urllib.request.Request(
+                "https://huggingface.co/api/whoami-v2", headers=self._headers()
+            )
+            with urllib.request.urlopen(identity, timeout=30) as response:
+                who = json.loads(response.read()).get("name", "unknown")
+        except urllib.error.HTTPError as exc:
+            return f"✗ HF rejected the token: HTTP {exc.code}"
+        except urllib.error.URLError as exc:
+            return f"✗ Could not reach Hugging Face: {exc.reason}"
+
+        return f"✓ token valid, authenticated as {who}"
+
+    def check_dataset(self) -> str:
+        """Verify the token authenticates *and* this dataset actually resolves.
+
+        A present token and an importable ``datasets`` say nothing about whether
+        the configured dataset can be read. The Hub answers anonymously with 401
+        for a private repo *and* for one that does not exist, so "it returned
+        401, therefore it is private" is not a sound inference — only an
+        authenticated request tells those apart. This makes that request.
+        """
+        import json
+        import urllib.error
+        import urllib.request
+
+        token_status = self.check_token()
+        if token_status.startswith("✗"):
+            return token_status
+        who = token_status.rsplit(" ", 1)[-1] if self.token else "anonymous"
+
+        try:
+            probe = urllib.request.Request(
+                f"https://huggingface.co/api/datasets/{self.dataset}",
+                headers=self._headers(),
+            )
+            with urllib.request.urlopen(probe, timeout=30) as response:
+                info = json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 404):
+                detail = (
+                    "it does not exist, or this token cannot see it"
+                    if self.token
+                    else "it is private or does not exist — no token was supplied"
+                )
+                return (
+                    f"✗ authenticated as {who}, but '{self.dataset}' did not "
+                    f"resolve: {detail}"
+                )
+            return f"✗ HF returned HTTP {exc.code} for '{self.dataset}'"
+        except urllib.error.URLError as exc:
+            return f"✗ Could not reach Hugging Face: {exc.reason}"
+
+        visibility = "private" if info.get("private") else "public"
+        return f"✓ authenticated as {who}; '{self.dataset}' resolves ({visibility})"
+
     def _provenance(self, request: BarRequest) -> Provenance:
         detail = f"{self.dataset}:{self.split}"
         if self.config:

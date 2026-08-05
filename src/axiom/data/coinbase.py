@@ -102,6 +102,30 @@ class CoinbaseProvider(BaseProvider):
         # honest place for it: "reachable" is not knowable without a request.
         return True
 
+    def check_reachable(self) -> str:
+        """Probe the public endpoint and report whether bars can be fetched.
+
+        ``is_available`` is true unconditionally because this provider needs no
+        credentials, so it says nothing about whether the endpoint can actually
+        be reached. On a network with egress restrictions those are opposite
+        answers, and the difference is invisible until a fetch fails. One cheap
+        request settles it.
+        """
+        request = urllib.request.Request(
+            f"{_API_URL}/products/BTC-USD", headers={"User-Agent": "axiom"}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=30) as response:
+                json.loads(response.read())
+        except urllib.error.HTTPError as exc:
+            return f"✗ Coinbase returned HTTP {exc.code}"
+        except urllib.error.URLError as exc:
+            return f"✗ Could not reach Coinbase: {exc.reason}"
+        except (TimeoutError, OSError) as exc:  # pragma: no cover - network shape
+            return f"✗ Could not reach Coinbase: {exc}"
+
+        return "✓ Coinbase reachable (public candles, no credentials)"
+
     def product_id(self, symbol: str) -> str:
         """Resolve a symbol to a Coinbase product id.
 

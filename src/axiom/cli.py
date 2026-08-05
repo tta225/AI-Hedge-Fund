@@ -373,15 +373,26 @@ def research(
 
 
 @app.command("data-check")
-def data_check() -> None:
+def data_check(
+    dataset: str = typer.Option(
+        None,
+        "--dataset",
+        help="Hugging Face dataset id to verify, e.g. user/my-ohlcv. "
+        "Without it only the token is checked, not that any dataset resolves.",
+    ),
+) -> None:
     """Report which market data sources are reachable and credentialed.
 
     Run this first. Environment variables are injected at container start, so a
     credential saved mid-session will not appear until a new session begins —
     this command makes that visible instead of surfacing as a 401 later.
+
+    Every source is *probed*, not merely inspected for credentials. A key that is
+    present but unusable — wrong value, or a host the network will not route to —
+    reports as a failure here rather than as a stack trace inside a backtest.
     """
     from axiom.core.credentials import describe_credentials, misnamed_credentials
-    from axiom.data import AlpacaProvider, HuggingFaceProvider
+    from axiom.data import AlpacaProvider, CoinbaseProvider, HuggingFaceProvider
     from axiom.data.registry import default_registry
 
     console.print("\n[bold]Credentials[/bold]")
@@ -400,30 +411,54 @@ def data_check() -> None:
 
     console.print("\n[bold]Market data sources[/bold]\n")
 
-    alpaca = AlpacaProvider()
-    console.print("[bold cyan]Alpaca[/bold cyan]")
-    for line in alpaca.check_credentials().splitlines():
-        console.print(f"  {line}")
+    # Reachability is only knowable by asking. Record what each probe found so
+    # the summary below reports verified state rather than repeating the
+    # credential check under a different name.
+    reachable: dict[str, bool] = {}
 
-    console.print("\n[bold cyan]Hugging Face[/bold cyan]")
-    hf = HuggingFaceProvider("placeholder/placeholder")
-    if not hf.is_available():
-        # `[huggingface]` is rich markup syntax; escape the bracket or the
-        # extra name is silently swallowed from the output.
-        console.print(
-            r"  ✗ datasets not installed — pip install -e '.\[huggingface]'"
-        )
-    elif not hf.token:
-        console.print("  ✗ no HF_TOKEN — required for private datasets")
+    def report(name: str, status: str) -> None:
+        console.print(f"[bold cyan]{name}[/bold cyan]")
+        for line in status.splitlines():
+            # `[huggingface]` and friends are rich markup; escape so an extra
+            # name is not silently swallowed from the output.
+            console.print(f"  {line.replace('[', chr(92) + '[')}")
+        reachable[name.lower()] = status.lstrip().startswith("✓")
+
+    report("Alpaca", AlpacaProvider().check_credentials())
+    console.print()
+    report("Coinbase", CoinbaseProvider().check_reachable())
+    console.print()
+
+    if dataset:
+        report("Hugging Face", HuggingFaceProvider(dataset).check_dataset())
     else:
-        console.print("  ✓ token present and datasets installed")
+        # Without a dataset id only the token can be checked. Say that plainly:
+        # a valid token pointed at a dataset that does not exist looks identical
+        # to a working setup until the first load fails.
+        status = HuggingFaceProvider("unused/unused").check_token()
+        if status.startswith("✓"):
+            status += "\n  ? pass --dataset <id> to verify a dataset resolves"
+        report("Hugging Face", status)
 
     registry = default_registry()
-    available = [p.name for p in registry.available()]
+    credentialed = [p.name for p in registry.available()]
+    # `available()` tests credentials and imports, never the network. Report the
+    # two separately: a provider can be fully credentialed and still unroutable,
+    # and collapsing them is how "usable now" ends up contradicting a failure
+    # printed four lines above it.
+    confirmed = [name for name in credentialed if reachable.get(name)]
+    blocked = [name for name in credentialed if reachable.get(name) is False]
+
     console.print("\n[bold cyan]Registry[/bold cyan]")
-    console.print(f"  order     : {[p.name for p in registry.providers]}")
-    console.print(f"  usable now: {available or '[red]none[/red]'}")
-    if not available:
+    console.print(f"  order        : {[p.name for p in registry.providers]}")
+    console.print(f"  credentialed : {credentialed or '[red]none[/red]'}")
+    console.print(f"  reachable    : {confirmed or '[red]none[/red]'}")
+    if blocked:
+        console.print(
+            f"  [yellow]credentialed but unreachable: {blocked} — the keys are "
+            f"fine; the network is not[/yellow]"
+        )
+    if not confirmed:
         console.print(
             "\n[yellow]No real data source is usable. Everything still runs with "
             "--synthetic, but synthetic results are a correctness check, never "

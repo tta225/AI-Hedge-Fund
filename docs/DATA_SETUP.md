@@ -67,7 +67,12 @@ existing value.
 
 ```bash
 python -m axiom.cli data-check
+python -m axiom.cli data-check --dataset Tta225/OHLCV-1m-bucket   # also verify a HF dataset
 ```
+
+`data-check` probes each source rather than just looking for keys. It reports
+`credentialed` and `reachable` as separate lines, because they are separate
+things — see [When the keys are fine and the network is not](#when-the-keys-are-fine-and-the-network-is-not).
 
 ### Doing it by hand instead
 
@@ -138,6 +143,7 @@ not, and does not belong here.
 | `not set` | The variable never arrived — saved to a different environment, or saved after this session started |
 | `not set` **plus a rename hint** | The key *is* there under a name nothing reads. Rename it; do not re-copy the key |
 | `rejected the credentials: HTTP 401` | It arrived and Alpaca refused it — now it is genuinely the key |
+| `Could not reach …: Tunnel connection failed: 403` | The key is irrelevant — the network refused to route to the host. See below |
 
 The middle row is the one that wastes days, so `data-check` looks for it
 explicitly and prints the name it found alongside the name to use. It reads
@@ -146,6 +152,40 @@ names only, never values.
 **The catch that costs people the most time:** environment variables are
 injected when the container *starts*. A secret saved mid-session does not appear
 until you **begin a new session** — which looks exactly like a rejected key.
+
+---
+
+## When the keys are fine and the network is not
+
+In a sandboxed environment, outbound HTTPS goes through a policy-enforcing
+proxy, and a host that is not on the allowlist fails the CONNECT with **403
+Forbidden** before any request is sent. Perfectly valid credentials produce:
+
+```
+Alpaca
+  ✗ Could not reach Alpaca: Tunnel connection failed: 403 Forbidden
+```
+
+This is not a credential problem and no amount of re-pasting the key fixes it.
+The market data hosts that need to be allowed are:
+
+| Host | Used by |
+|---|---|
+| `data.alpaca.markets`, `paper-api.alpaca.markets` | Alpaca |
+| `api.exchange.coinbase.com` | Coinbase |
+| `huggingface.co` | Hugging Face datasets |
+| `query1.finance.yahoo.com` | yfinance |
+
+Add them to the environment's network policy — for Claude Code on the web, in
+the environment settings alongside the environment variables. Then start a new
+session.
+
+**Why `data-check` reports `credentialed` and `reachable` separately:** a
+provider's `is_available()` tests credentials and imports, never the network,
+and `CoinbaseProvider.is_available()` is unconditionally `True` because it needs
+no credentials at all. Collapsing the two into one "usable" line reported
+Coinbase as usable on a network that refused to route to it. They are different
+questions and the output now asks both.
 
 ---
 
@@ -199,8 +239,18 @@ AlpacaProvider(feed="sip")
 
 ## 2. Hugging Face — your own dataset
 
-For `Tta225/OHLCV-1m-bucket`, which is **private** (confirmed: a public dataset
-resolves anonymously, this one returns 401).
+> **`Tta225/OHLCV-1m-bucket` does not currently exist.** An earlier version of
+> this page said it was confirmed private, reasoning that a public dataset
+> resolves anonymously while this one returned 401. That inference was wrong:
+> the Hub returns 401 to an anonymous caller for a private repo *and* for one
+> that is absent, precisely so that absence cannot be probed. Checked again with
+> a valid token for the `Tta225` account, it returns 404, and the account owns no
+> datasets. Create and upload it before the instructions below apply.
+>
+> `axiom data-check --dataset <id>` now makes this call authenticated and
+> reports the two cases apart.
+
+The instructions below assume a dataset that exists.
 
 ### Easiest option: make the dataset public
 

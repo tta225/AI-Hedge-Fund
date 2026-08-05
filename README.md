@@ -16,8 +16,24 @@ AXIOM is a systematic trading platform built around three ideas:
 
 ## Quick start
 
-> **Note:** the work is on the branch `claude/ai-hedge-fund-platform-vxebwq`,
-> not `main`. Clone, then `git checkout claude/ai-hedge-fund-platform-vxebwq`.
+> 🆕 **New to the terminal?** Read [`docs/START_HERE.md`](docs/START_HERE.md)
+> instead of this section. It assumes nothing and spells out every command.
+
+**The browser console — the fastest way to see what this does:**
+
+```bash
+python -m pip install -e ".[web]"
+python -m axiom.cli web            # then open http://127.0.0.1:8000
+```
+
+Three tabs: a candlestick **Dashboard** with the ICT overlays drawn on it
+(gaps, order blocks, liquidity, structure, dealing range and OTE), a
+**Backtest** runner with equity curve and trade blotter, and a **Data Sources**
+page that reports which feeds are credentialed and which are actually
+reachable. It binds to localhost and has no authentication of its own — put it
+behind an authenticating proxy before widening the bind address.
+
+**The command line:**
 
 ```bash
 python -m pip install -e ".[dev]"

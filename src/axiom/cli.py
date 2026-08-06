@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
@@ -24,8 +25,9 @@ from axiom.portfolio.positions import Portfolio
 from axiom.quant.regime import RegimeModel
 from axiom.research.lab import Candidate, StrategyLab, grid
 from axiom.risk.manager import RiskManager
+from axiom.strategy.archive import ARCHIVE, catalogue, families
 from axiom.strategy.base import Strategy
-from axiom.strategy.ict_strategies import LiquidityRaidReversal, SilverBulletStrategy
+from axiom.strategy.ict_strategies import SilverBulletStrategy
 from axiom.strategy.quant_strategies import (
     MeanReversionZScore,
     TimeSeriesMomentum,
@@ -39,12 +41,11 @@ app = typer.Typer(
 )
 console = Console()
 
-STRATEGIES: dict[str, type[Strategy]] = {
-    "silver-bullet": SilverBulletStrategy,
-    "liquidity-raid": LiquidityRaidReversal,
-    "momentum": TimeSeriesMomentum,
-    "mean-reversion": MeanReversionZScore,
-    "vol-breakout": VolatilityBreakout,
+#: Strategy names the CLI and web API accept, sourced from the archive so the
+#: two surfaces cannot drift apart. `STRATEGIES` maps name → factory for
+#: backwards compatibility with callers that expect a class-like factory.
+STRATEGIES: dict[str, Callable[..., Strategy]] = {
+    key: entry.factory for key, entry in ARCHIVE.items()
 }
 
 
@@ -503,6 +504,148 @@ def web(
         )
     console.print("[dim]Press Ctrl+C to stop.[/dim]\n")
     serve(host=host, port=port, reload=reload)
+
+
+@app.command()
+def strategies(
+    family: str = typer.Option(None, help="Filter to one family."),
+    detail: bool = typer.Option(False, help="Print each strategy's full entry."),
+) -> None:
+    """List the strategy archive: families, theses, sources and sweep grids."""
+    if detail:
+        console.print(catalogue())
+        return
+    console.print(f"\n[bold]{len(ARCHIVE)} strategies[/bold]\n")
+    for fam, keys in families().items():
+        if family and fam.value != family:
+            continue
+        console.print(f"[bold cyan]{fam.value}[/bold cyan] ({len(keys)})")
+        for key in keys:
+            entry = ARCHIVE[key]
+            mark = " [yellow](control)[/yellow]" if entry.evidence.value == "control" else ""
+            console.print(f"  {key:<22}{entry.thesis[:74]}{mark}")
+        console.print()
+
+
+@app.command("options")
+def options_catalogue(
+    structure: str = typer.Option(None, help="Show one structure in detail."),
+    spot: float = typer.Option(100.0, help="Underlying price for the scenario."),
+    volatility: float = typer.Option(0.25, help="ASSUMED volatility — not a quote."),
+    outlook: str = typer.Option(None, help="bullish | bearish | neutral | volatile"),
+) -> None:
+    """List option structures, or price one against an assumed volatility.
+
+    The platform has no options chain feed, so every number here comes from a
+    model volatility you supplied. It supports scenario analysis and structure
+    comparison; it cannot tell you whether an option is cheap.
+    """
+    from axiom.options import CATALOGUE, Direction, build, by_outlook
+
+    if structure:
+        if structure not in CATALOGUE:
+            console.print(f"[red]Unknown structure {structure!r}.[/red]")
+            console.print(f"Available: {', '.join(sorted(CATALOGUE))}")
+            raise typer.Exit(code=1)
+        console.print()
+        console.print(build(structure, spot=spot, volatility=volatility).summary())
+        return
+
+    specs = by_outlook(Direction(outlook)) if outlook else sorted(
+        CATALOGUE.values(), key=lambda s: s.key
+    )
+    console.print(f"\n[bold]{len(specs)} option structures[/bold]")
+    console.print("[dim]No options feed — structures and payoffs only.[/dim]\n")
+    for spec in specs:
+        risk = "defined" if spec.defined_risk else "[red]UNDEFINED[/red]"
+        console.print(
+            f"  {spec.key:<26}{spec.direction.value:<10}"
+            f"{spec.volatility_view.value:<12}{risk}"
+        )
+
+
+@app.command("rank")
+def rank_signals(
+    symbol: str = typer.Option("ES"),
+    timeframe: str = typer.Option("1h"),
+    days: int = typer.Option(250),
+    synthetic: bool = typer.Option(False),
+    seed: int = typer.Option(5),
+    folds: int = typer.Option(4, help="Walk-forward splits."),
+    warmup: int = typer.Option(250),
+    equity: float = typer.Option(5_000_000.0, help="Account equity for sizing."),
+    top: int = typer.Option(10),
+    scoreboard: bool = typer.Option(False, help="Also print every strategy's record."),
+) -> None:
+    """Rank live signals across the archive by out-of-sample evidence.
+
+    Scores every strategy walk-forward, penalises for the number tried, shrinks
+    by sample size, then ranks whatever is signalling now. The score is a
+    relative ordering, never a probability — see axiom/research/ensemble.py.
+    """
+    from axiom.research.ensemble import SignalEnsemble
+
+    series = _load_series(symbol, timeframe, days, synthetic, seed)
+    ensemble = SignalEnsemble(
+        folds=folds, warmup=warmup,
+        risk_settings=RiskSettings(
+            account_equity=equity, max_gross_exposure_pct=5000.0
+        ),
+    )
+    console.print(
+        f"\n[dim]Scoring {len(ensemble.entries)} strategies over {folds} "
+        f"walk-forward folds — this takes a while.[/dim]\n"
+    )
+    ranking = ensemble.rank(series, top=top)
+    console.print(ranking.render())
+    if scoreboard:
+        console.print("\n[bold]Out-of-sample scoreboard[/bold]")
+        console.print(ranking.scoreboard())
+
+
+@app.command("portfolio-backtest")
+def portfolio_backtest(
+    symbols: str = typer.Option("ES,NQ,SPY", help="Comma-separated symbols."),
+    strategy: str = typer.Option("donchian"),
+    timeframe: str = typer.Option("1h"),
+    days: int = typer.Option(180),
+    synthetic: bool = typer.Option(False),
+    seed: int = typer.Option(11),
+    equity: float = typer.Option(5_000_000.0),
+    warmup: int = typer.Option(300),
+) -> None:
+    """Backtest several instruments against ONE shared risk budget.
+
+    Not the same as running each symbol separately and adding the results: here
+    a position in one instrument consumes budget the others then cannot use,
+    which is the whole point.
+    """
+    from axiom.backtest.portfolio_engine import run_portfolio
+
+    if strategy not in ARCHIVE:
+        console.print(f"[red]Unknown strategy {strategy!r}.[/red]")
+        raise typer.Exit(code=1)
+
+    wanted = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    book = {
+        symbol: _load_series(symbol, timeframe, days, synthetic, seed + i)
+        for i, symbol in enumerate(wanted)
+    }
+    result = run_portfolio(
+        ARCHIVE[strategy].build(), book,
+        risk_settings=RiskSettings(
+            account_equity=equity, max_gross_exposure_pct=5000.0
+        ),
+        warmup=warmup,
+    )
+    console.print()
+    console.print(result.report.render())
+    console.print("\n[bold]Per-instrument attribution[/bold]")
+    console.print(result.attribution_table())
+    console.print("\n[bold]Signal funnel[/bold]")
+    console.print(result.funnel())
+    console.print("\n[bold]Return correlations[/bold]")
+    console.print(result.correlations.round(3).to_string())
 
 
 @app.command()

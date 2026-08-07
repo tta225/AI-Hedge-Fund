@@ -121,13 +121,39 @@ is closed.
 #### How to fix it
 
 The app is running inside a Claude Code environment that has a list of websites
-it is allowed to visit. These four are not on the list yet:
+it is allowed to visit. Anything not on that list is refused before your key is
+ever used.
+
+**Market data** (Alpaca, Coinbase, Yahoo):
 
 ```
 data.alpaca.markets
 paper-api.alpaca.markets
 api.exchange.coinbase.com
 query1.finance.yahoo.com
+```
+
+**Your Hugging Face bucket.** `huggingface.co` is usually already allowed, but
+that host only serves the *file list*. The actual **file contents** come from
+completely different addresses, which is why you can see your 411 files and
+still not download one:
+
+```
+cas-server.xethub.hf.co
+transfer.xethub.hf.co
+xethub.hf.co
+s3.hf.co
+cdn-lfs.hf.co
+cdn-lfs-us-1.hf.co
+```
+
+The first one, `cas-server.xethub.hf.co`, is the one that actually blocks the
+download — the rest are the other routes Hugging Face may use. Add all six.
+
+If the setting accepts wildcards, this single line replaces all six:
+
+```
+*.hf.co
 ```
 
 To add them:
@@ -137,10 +163,27 @@ To add them:
    name — for this project it must be **`AI Hedge Fund`**, not `Default`.
 3. Hover over that environment, click the **gear icon**
 4. Find the **network** or **allowed domains** setting
-5. Add the four addresses above, one per line
+5. Add the addresses above, one per line
 6. Save
 7. **Start a brand new session.** This part is not optional — the setting is only
    read when a session starts, so an existing one will keep failing.
+
+### Checking it worked
+
+In the new session:
+
+```
+python -m axiom.cli data-check --bucket Tta225/OHLCV-1m-bucket
+```
+
+That confirms the file *list*. To confirm the **bytes**, pull one small window:
+
+```
+python -c "from axiom.data import HFBucketProvider; from axiom.core.types import get_instrument; from axiom.data.base import BarRequest; p=HFBucketProvider('Tta225/OHLCV-1m-bucket', prefix='data/'); print(p.fetch_bars(BarRequest.lookback(get_instrument('SPY'),'1m',5)).describe())"
+```
+
+If that prints a line with a bar count, the bytes are flowing. If it fails and
+mentions `xethub`, the hosts above are still blocked.
 
 If you cannot find that setting, it may not be available on your plan. In that
 case run the app on your own computer instead (Steps 1–3 above), where there is

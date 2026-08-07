@@ -150,6 +150,9 @@ class HFBucketProvider(BaseProvider):
         self.cache_dir = Path(cache_dir)
         self.max_files = max_files
         self._listing: list[BucketObject] | None = None
+        #: Rows merged because they shared a timestamp on the last fetch. Real
+        #: files contain them; see `_collapse_duplicate_timestamps`.
+        self.merged_bars = 0
 
     def is_available(self) -> bool:
         try:
@@ -330,6 +333,7 @@ class HFBucketProvider(BaseProvider):
             timestamp_column=self.timestamp_column,
             provider_name=self.name,
         )
+        frame = self._collapse_duplicate_timestamps(frame)
 
         if self.symbol_column and self.symbol_column.lower() in frame.columns:
             column = frame[self.symbol_column.lower()].astype(str).str.upper()
@@ -349,6 +353,53 @@ class HFBucketProvider(BaseProvider):
                 f"{request.start} to {request.end}"
             )
         return window
+
+    def _collapse_duplicate_timestamps(self, frame: pd.DataFrame) -> pd.DataFrame:
+        """Merge rows sharing a timestamp into one bar, preserving information.
+
+        Real files contain them. In `Tta225/OHLCV-1m-bucket`, SPY has 3 minutes
+        in March 2026 that appear twice with different volumes — 705 and 17,013
+        for the same minute — which is the signature of two partial prints of one
+        bar rather than a corrupt row.
+
+        `OHLCVSeries` rejects duplicate timestamps outright, so something must
+        give. The three options are drop one, error, or merge. **Dropping is the
+        wrong one**: it discards real volume and picks a close arbitrarily, and
+        it does so silently. Merging is what a resample to that same interval
+        would do anyway — open from the first row, close from the last, high and
+        low from the extremes, volume summed — so it is the resolution that
+        leaves the series identical to one built from the underlying prints.
+
+        The count is recorded on `self.merged_bars` so a caller can report it.
+        A silent repair of market data is not a repair.
+        """
+        duplicated = frame.index.duplicated(keep=False)
+        count = int(duplicated.sum())
+        self.merged_bars = count
+        if count == 0:
+            return frame
+
+        # Stable grouping: normalise_ohlcv_frame sorted the index with a stable
+        # sort, so within one timestamp the original file order survives and
+        # first/last are meaningful.
+        aggregations: dict[str, str] = {}
+        for column in frame.columns:
+            if column == "open":
+                aggregations[column] = "first"
+            elif column == "high":
+                aggregations[column] = "max"
+            elif column == "low":
+                aggregations[column] = "min"
+            elif column == "close":
+                aggregations[column] = "last"
+            elif column == "volume":
+                aggregations[column] = "sum"
+            else:
+                aggregations[column] = "first"
+
+        merged = frame.groupby(level=0, sort=True).agg(aggregations)
+        merged.index.name = frame.index.name
+        return merged
 
     def _provenance(self, request: BarRequest) -> Provenance:
         return Provenance(

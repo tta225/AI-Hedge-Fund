@@ -58,15 +58,47 @@ def _make(cls: type[Strategy], params: dict[str, Any]) -> Strategy:
     return cls(**params)
 
 
+#: Default column holding the instrument in a multi-ticker bucket. Without a
+#: symbol filter every ticker concatenates into one series, which validates and
+#: backtests and means nothing — so this defaults on rather than off.
+BUCKET_SYMBOL_COLUMN = "ticker"
+
+
 def _load_series(
-    symbol: str, timeframe: str, days: int, synthetic: bool, seed: int
+    symbol: str,
+    timeframe: str,
+    days: int,
+    synthetic: bool,
+    seed: int,
+    bucket: str = "",
+    bucket_prefix: str = "data/",
+    resample_from: str = "",
 ) -> OHLCVSeries:
     """Fetch bars, falling back to synthetic **only** when asked explicitly.
 
     Never silently substitutes generated data for a failed feed — that is how a
     fabricated backtest happens.
+
+    Args:
+        bucket: read from a Hugging Face Storage Bucket instead of the registry.
+        resample_from: fetch at this timeframe and resample up to `timeframe`.
+            Buckets of 1-minute bars need this — asking a 1m store for 15m bars
+            returns nothing, because no such rows exist.
     """
     instrument = get_instrument(symbol)
+
+    if bucket:
+        from axiom.data import HFBucketProvider
+
+        source_tf = resample_from or timeframe
+        provider = HFBucketProvider(
+            bucket, prefix=bucket_prefix, symbol_column=BUCKET_SYMBOL_COLUMN
+        )
+        series = provider.fetch_bars(
+            BarRequest.lookback(instrument, source_tf, days)
+        )
+        return series.resample(timeframe) if source_tf != timeframe else series
+
     request = BarRequest.lookback(instrument, timeframe, days)
 
     if synthetic:
@@ -118,11 +150,20 @@ def analyse(
     synthetic: bool = typer.Option(False),
     seed: int = typer.Option(7),
     strict: bool = typer.Option(False, help="Use the high-conviction preset."),
+    bucket: str = typer.Option(
+        "", help="Read from a Hugging Face Storage Bucket, e.g. user/my-bucket."
+    ),
+    resample_from: str = typer.Option(
+        "", help="Source timeframe in the bucket, resampled up to --timeframe."
+    ),
 ) -> None:
     """Print the ICT structural read for a symbol."""
     from axiom.ict.engine import STRICT_CONFIG
 
-    series = _load_series(symbol, timeframe, days, synthetic, seed)
+    series = _load_series(
+        symbol, timeframe, days, synthetic, seed,
+        bucket=bucket, resample_from=resample_from,
+    )
     state = ICTEngine(STRICT_CONFIG if strict else ICTConfig()).analyse(series)
 
     console.print(f"\n[bold cyan]{series.describe()}[/bold cyan]\n")
@@ -751,6 +792,12 @@ def base_rates(
     synthetic: bool = typer.Option(False),
     seed: int = typer.Option(7),
     data_root: str = typer.Option("", help="Read from a local CSV cache instead."),
+    bucket: str = typer.Option(
+        "", help="Read from a Hugging Face Storage Bucket, e.g. user/my-bucket."
+    ),
+    resample_from: str = typer.Option(
+        "", help="Source timeframe in the bucket, resampled up to --timeframe."
+    ),
 ) -> None:
     """Measure how often ICT features actually do what they claim.
 
@@ -763,9 +810,47 @@ def base_rates(
     if data_root:
         series = CSVProvider(data_root).fetch(get_instrument(symbol), timeframe, days=days)
     else:
-        series = _load_series(symbol, timeframe, days, synthetic, seed)
+        series = _load_series(
+            symbol, timeframe, days, synthetic, seed,
+            bucket=bucket, resample_from=resample_from,
+        )
 
     console.print(measure_base_rates(series, horizon=horizon).render())
+
+
+@app.command("session-rates")
+def session_rates(
+    symbol: str = typer.Option("SPY"),
+    timeframe: str = typer.Option("15m"),
+    days: int = typer.Option(400),
+    horizon: int = typer.Option(48, help="Forward bars over which an outcome is judged."),
+    synthetic: bool = typer.Option(False),
+    seed: int = typer.Option(7),
+    bucket: str = typer.Option(
+        "", help="Read from a Hugging Face Storage Bucket, e.g. user/my-bucket."
+    ),
+    resample_from: str = typer.Option(
+        "", help="Source timeframe in the bucket, resampled up to --timeframe."
+    ),
+) -> None:
+    """Measure ICT base rates INSIDE each killzone, against the same control.
+
+    This is the test the crypto data could not run. Killzones, Silver Bullet
+    windows and session concepts are anchored to the equities session, and BTC
+    has no cash open — so on crypto they are slices of the clock with nothing
+    behind them. On equities the conditional claim becomes measurable.
+
+    Read the `vs uncond.` column: it is how much better a feature does inside a
+    window than it does overall. That, and not the raw rate, is what "context
+    matters" has to mean if it means anything.
+    """
+    from axiom.research.session_rates import measure_session_rates
+
+    series = _load_series(
+        symbol, timeframe, days, synthetic, seed,
+        bucket=bucket, resample_from=resample_from,
+    )
+    console.print(measure_session_rates(series, horizon=horizon).render())
 
 
 @app.command("cache-data")

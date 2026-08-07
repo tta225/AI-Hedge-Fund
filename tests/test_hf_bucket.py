@@ -246,15 +246,50 @@ class TestFetching:
         with pytest.raises(ProviderError, match="above the 1-file cap"):
             provider.fetch_bars(_request("2024-01-01", "2024-03-31"))
 
-    def test_symbol_column_filters_and_reports_what_is_there(self, tmp_path: Path) -> None:
+    def test_symbol_column_selects_only_that_ticker(self, tmp_path: Path) -> None:
+        """Files hold every ticker together — 22,057 of them in the real bucket."""
+        spy = _bars("2024-01")
+        spy["ticker"] = "SPY"
+        qqq = _bars("2024-01")
+        qqq["close"] = 999.0
+        qqq["high"] = 1000.0
+        qqq["low"] = 998.0
+        qqq["open"] = 999.0
+        qqq["ticker"] = "QQQ"
+        frame = pd.concat([spy, qqq], ignore_index=True)
+
+        provider = _StubProvider(
+            ["data/ohlcv_2024-01.parquet"], {"data/ohlcv_2024-01.parquet": frame},
+            cache_dir=tmp_path / "cache", symbol_column="ticker",
+        )
+        series = provider.fetch_bars(_request("2024-01-01", "2024-01-01T00:20"))
+        assert float(series.closes.max()) < 900.0, "QQQ rows leaked into SPY"
+        assert len(series) == 21
+
+    def test_a_symbol_absent_from_the_files_is_a_clear_error(self, tmp_path: Path) -> None:
         frame = _bars("2024-01")
         frame["ticker"] = "QQQ"
         provider = _StubProvider(
             ["data/ohlcv_2024-01.parquet"], {"data/ohlcv_2024-01.parquet": frame},
             cache_dir=tmp_path / "cache", symbol_column="ticker",
         )
-        with pytest.raises(ProviderError, match=r"no rows for SPY.*QQQ"):
+        with pytest.raises(ProviderError, match=r"no rows for SPY.*symbol_column"):
             provider.fetch_bars(_request("2024-01-01", "2024-01-01T00:20"))
+
+    def test_pushdown_falls_back_when_the_column_is_missing(self, tmp_path: Path) -> None:
+        """A slow read beats no read.
+
+        Predicate pushdown needs the column to exist. When it does not, the
+        adapter must fall back to a full read rather than failing — the file may
+        still be a single-instrument file that needs no filter at all.
+        """
+        frame = _bars("2024-01")  # no `ticker` column
+        provider = _StubProvider(
+            ["data/ohlcv_2024-01.parquet"], {"data/ohlcv_2024-01.parquet": frame},
+            cache_dir=tmp_path / "cache", symbol_column="ticker",
+        )
+        series = provider.fetch_bars(_request("2024-01-01", "2024-01-01T00:20"))
+        assert len(series) == 21
 
     def test_a_download_failure_names_the_hosts_involved(self, tmp_path: Path) -> None:
         """The failure mode seen in practice: listing works, bytes are blocked."""

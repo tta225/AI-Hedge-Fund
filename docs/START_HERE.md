@@ -247,12 +247,21 @@ free — works out which months your date range needs, and downloads only those:
 Downloaded files are kept in `data/cache/hf-bucket/`, so running the same
 backtest twice only downloads once.
 
-### The one thing still to confirm
+### What is inside your files
 
-Nobody has opened one of your files yet, so **the column names inside are
-unknown**. The app copes with most common namings automatically. If it complains
-about a missing timestamp or price column, tell me what the error says and it can
-be pointed at the right columns — no need to change your files.
+Confirmed by opening one:
+
+| column | what it is |
+|---|---|
+| `timestamp` | the minute, in UTC |
+| `open`, `high`, `low`, `close` | the prices |
+| `volume` | shares traded |
+| `ticker` | which company |
+
+**Your files hold every ticker together, not one per file.** One month is
+**34.4 million rows across 22,057 tickers**. The app filters to the symbol you
+ask for while reading, so asking for SPY reads only SPY — about 20,000 rows, a
+few seconds. It does not load all 34 million.
 
 ---
 

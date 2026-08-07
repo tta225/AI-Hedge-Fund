@@ -407,10 +407,31 @@ HF bucket
 ```python
 from axiom.data import HFBucketProvider
 
-provider = HFBucketProvider("Tta225/OHLCV-1m-bucket", prefix="data/")
+provider = HFBucketProvider(
+    "Tta225/OHLCV-1m-bucket",
+    prefix="data/",
+    symbol_column="ticker",        # REQUIRED — see below
+)
 print(provider.inspect())          # listing only — no download
 series = provider.fetch_bars(request)
 ```
+
+**Confirmed schema** (verified by downloading and opening a file):
+
+| column | type |
+|---|---|
+| `timestamp` | `datetime64[ns, UTC]` — auto-detected |
+| `open`, `high`, `low`, `close`, `volume` | `float64` |
+| `ticker` | `str` |
+
+**`symbol_column="ticker"` is not optional.** These files are not one instrument
+each: a single month holds **34.4 million rows across 22,057 tickers**. Omit the
+filter and every ticker is concatenated into one series, producing bars that
+validate, backtest, and mean nothing.
+
+The filter is pushed into the Parquet reader, not applied afterwards, because
+one symbol is ~0.06% of a file. With pushdown a month resolves in about four
+seconds; without it the same request materialises 34 million rows.
 
 **Only the months you ask for are downloaded.** The adapter reads the object
 listing (metadata, free) and parses the calendar month out of each filename, so

@@ -25,19 +25,37 @@ guessed at.
 Files are cached under `cache_dir` and re-used, so the second run of a backtest
 costs nothing.
 
-What is verified and what is not
---------------------------------
-The listing, month-selection and caching paths are exercised against a local
-fixture in `tests/test_hf_bucket.py`.
+Why the symbol filter is pushed into the reader
+-----------------------------------------------
+These files are **not** one instrument each. A single month holds **34.4 million
+rows across 22,057 tickers**, and one symbol is roughly 20,000 of them — about
+**0.06%**. Reading a file whole and filtering in pandas therefore loads about
+1,700× more data than it keeps, and a single-symbol year would need hundreds of
+millions of rows resident to produce a few hundred thousand.
 
-**The download path is not verified end-to-end in the environment this was
-written in.** Bucket bytes are served by Xet (`cas-server.xethub.hf.co`,
-`transfer.xethub.hf.co`) and the S3 gateway (`s3.hf.co`), all of which are
-blocked by that environment's egress policy — only `huggingface.co` itself is
-reachable, which serves metadata. The column schema of the real files is
-likewise **unconfirmed**, because the files could not be opened. The adapter is
-therefore deliberately schema-flexible and reports what it found rather than
-assuming; see `inspect`.
+So `symbol_column` becomes a Parquet predicate, evaluated by the reader. With it
+a month resolves in seconds; without it the same request is a multi-gigabyte
+materialisation. If pushdown fails (missing column, engine without support) the
+adapter falls back to a full read rather than erroring — a slow answer beats no
+answer — and the pandas-side filter still applies.
+
+Verified end-to-end
+-------------------
+Listing, month-selection, caching, download and parse are all exercised against
+the real bucket. Confirmed schema:
+
+    timestamp  datetime64[ns, UTC]
+    open, high, low, close, volume   float64
+    ticker     str
+
+`timestamp` is auto-detected. **`symbol_column="ticker"` is required** — without
+it every ticker is concatenated into one series and the resulting bars are
+meaningless.
+
+Bucket bytes arrive in **two hops**: `cas-server.xethub.hf.co` returns a signed
+URL pointing at a regional CDN (`us.aws.cdn.hf.co`). Both must be reachable, and
+only the first has a fixed name — see the download error and
+`docs/DATA_SETUP.md`.
 """
 
 from __future__ import annotations
@@ -268,14 +286,43 @@ class HFBucketProvider(BaseProvider):
                 f"Narrow the window, or raise max_files if you mean it."
             )
 
+        # Push the symbol filter into the Parquet reader rather than loading
+        # everything and filtering in pandas. This is not a micro-optimisation:
+        # a month of `Tta225/OHLCV-1m-bucket` is 34.4M rows across 22,057
+        # tickers, of which one symbol is ~20k — about 0.06%. Read whole and a
+        # single-symbol year needs hundreds of millions of rows in memory to
+        # keep a few hundred thousand.
+        filters = None
+        if self.symbol_column:
+            filters = [(self.symbol_column, "==", request.instrument.symbol.upper())]
+
         frames: list[pd.DataFrame] = []
         for path in self._download(objects):
             try:
-                frames.append(pd.read_parquet(path))
+                frames.append(pd.read_parquet(path, filters=filters))
             except Exception as exc:
-                raise ProviderError(
-                    f"{self.name}: could not read {path.name}: {exc}"
-                ) from exc
+                if filters is None:
+                    raise ProviderError(
+                        f"{self.name}: could not read {path.name}: {exc}"
+                    ) from exc
+                # Predicate pushdown needs the column to exist and the engine to
+                # support it. Fall back rather than fail — a slow read beats no
+                # read, and the pandas-side filter below still applies.
+                try:
+                    frames.append(pd.read_parquet(path))
+                except Exception as inner:
+                    raise ProviderError(
+                        f"{self.name}: could not read {path.name}: {inner}"
+                    ) from inner
+
+        if all(f.empty for f in frames) and filters is not None:
+            raise ProviderError(
+                f"{self.name}: no rows for {request.instrument.symbol} in "
+                f"{len(objects)} file(s) covering "
+                f"{request.start:%Y-%m-%d} to {request.end:%Y-%m-%d}. "
+                f"Check the symbol spelling, or that "
+                f"symbol_column={self.symbol_column!r} is the right column."
+            )
 
         frame = normalise_ohlcv_frame(
             pd.concat(frames, ignore_index=True) if len(frames) > 1 else frames[0],

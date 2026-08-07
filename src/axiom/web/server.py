@@ -25,6 +25,7 @@ import logging
 from pathlib import Path
 from typing import Any, Literal
 
+from axiom.agents.pipeline import AgentPipeline
 from axiom.backtest.engine import Backtester
 from axiom.core.config import RiskSettings, get_settings
 from axiom.core.series import OHLCVSeries
@@ -33,11 +34,14 @@ from axiom.data.base import BarRequest, ProviderError
 from axiom.data.registry import default_registry
 from axiom.data.synthetic import SyntheticProvider
 from axiom.ict.engine import STRICT_CONFIG, ICTConfig, ICTEngine
+from axiom.portfolio.positions import Portfolio
 from axiom.web.serialise import (
+    agent_payload,
     backtest_payload,
     ict_payload,
     instrument_payload,
     provenance_payload,
+    ranking_payload,
     series_payload,
 )
 
@@ -262,6 +266,137 @@ def regime(query: SeriesQuery) -> dict[str, Any]:
         },
         "provenance": provenance_payload(series.provenance),
     }
+
+
+
+class PipelineQuery(SeriesQuery):
+    days: int = Field(120, ge=1, le=MAX_DAYS)
+    strategy: str = Field("silver-bullet", max_length=64)
+    equity: float = Field(250_000.0, gt=0, le=1e12)
+
+
+class RankQuery(SeriesQuery):
+    days: int = Field(250, ge=1, le=MAX_DAYS)
+    timeframe: str = Field("1h", max_length=8)
+    folds: int = Field(3, ge=2, le=8)
+    warmup: int = Field(250, ge=50, le=5000)
+    equity: float = Field(5_000_000.0, gt=0, le=1e12)
+    top: int = Field(10, ge=1, le=50)
+
+
+@app.post("/api/pipeline")
+def pipeline(query: PipelineQuery) -> dict[str, Any]:
+    """Run Research → Debate → Backtest → Risk → Review.
+
+    There is no execute stage and the payload says so (`can_execute: false`).
+    The pipeline terminates in an approval request that a human acts on; it
+    cannot place an order, and no UI should imply otherwise.
+
+    Measured `facts` and generated `narrative` stay in separate fields all the
+    way to the browser. Merging them would destroy the one property that makes
+    an LLM safe in a trading loop — that a reader can always tell which numbers
+    were computed and which prose was written.
+    """
+    if query.strategy not in STRATEGIES:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": "unknown_strategy",
+                "message": f"Unknown strategy {query.strategy!r}.",
+                "available": sorted(STRATEGIES),
+            },
+        )
+
+    series = _load_series(query)
+    settings = get_settings()
+    result = AgentPipeline(settings.agents).run(
+        series,
+        STRATEGIES[query.strategy](),
+        risk_settings=RiskSettings(
+            account_equity=query.equity, max_gross_exposure_pct=2000.0
+        ),
+    )
+    return {
+        "pipeline": agent_payload(result),
+        "llm_enabled": settings.agents.enabled,
+        "provenance": provenance_payload(series.provenance),
+        "series": series_payload(series, max_bars=600),
+    }
+
+
+@app.post("/api/rank")
+def rank(query: RankQuery) -> dict[str, Any]:
+    """Rank live signals across the archive by out-of-sample evidence.
+
+    Slow by construction — every strategy is scored walk-forward before anything
+    is ranked. That is the cost of not ranking on in-sample results, which is
+    the fastest way to promote the luckiest strategy in a field of nulls.
+    """
+    from axiom.research.ensemble import SignalEnsemble
+
+    series = _load_series(query)
+    ensemble = SignalEnsemble(
+        folds=query.folds,
+        warmup=query.warmup,
+        risk_settings=RiskSettings(
+            account_equity=query.equity, max_gross_exposure_pct=5000.0
+        ),
+    )
+    ranking = ensemble.rank(series, top=query.top)
+    return {
+        "ranking": ranking_payload(ranking),
+        "strategies_scored": len(ensemble.entries),
+        "provenance": provenance_payload(series.provenance),
+    }
+
+
+@app.get("/api/broker")
+def broker(reconcile: bool = False) -> dict[str, Any]:
+    """Alpaca **paper** account status, and optionally a reconciliation.
+
+    Reports `is_live` explicitly. A console that shows broker state without
+    saying whether it is real money is a console that will eventually be
+    misread.
+    """
+    from axiom.execution.alpaca_paper import AlpacaPaperVenue
+
+    venue = AlpacaPaperVenue()
+    payload: dict[str, Any] = {
+        "venue": venue.name,
+        "is_live": venue.is_live,
+        "available": venue.is_available(),
+        "status": venue.check(),
+    }
+    if not venue.is_available():
+        return payload
+
+    try:
+        payload["account"] = venue.account()
+        payload["positions"] = [
+            {
+                "symbol": p.symbol,
+                "quantity": p.quantity,
+                "average_price": p.average_price,
+                "market_value": p.market_value,
+                "unrealised_pnl": p.unrealised_pnl,
+            }
+            for p in venue.positions().values()
+        ]
+        if reconcile:
+            report = venue.reconcile(
+                Portfolio(starting_cash=get_settings().risk.account_equity)
+            )
+            payload["reconciliation"] = {
+                "is_clean": report.is_clean,
+                "mismatched": {k: list(v) for k, v in report.mismatched.items()},
+                "broker_only": report.broker_only,
+                "platform_only": report.platform_only,
+                "equity_drift": report.equity_drift,
+                "render": report.render(),
+            }
+    except Exception as exc:
+        payload["error"] = str(exc)
+    return payload
 
 
 # ---------------------------------------------------------------------------

@@ -853,6 +853,55 @@ def session_rates(
     console.print(measure_session_rates(series, horizon=horizon).render())
 
 
+@app.command("broker")
+def broker(
+    reconcile: bool = typer.Option(
+        False, help="Compare the broker's positions against the platform book."
+    ),
+    orders: bool = typer.Option(False, help="List working orders at the broker."),
+) -> None:
+    """Check the Alpaca **paper** account, and reconcile it against the book.
+
+    Paper only. This venue reports `is_live = False`, so the router's live
+    refusal never has to fire — a live adapter would be a separate class and the
+    router already refuses those.
+
+    Reconciliation is the part that matters. Internal and broker state drift for
+    ordinary reasons — a manual trade, a corporate action, a fill missed during
+    a restart — and the drift is silent. A position the broker holds that this
+    platform does not know about is unmanaged: nothing will size against it,
+    stop it out, or close it.
+    """
+    from axiom.execution.alpaca_paper import AlpacaPaperVenue
+
+    venue = AlpacaPaperVenue()
+    console.print(f"\n[bold cyan]{venue.name}[/bold cyan]  (is_live={venue.is_live})")
+    console.print(f"  {venue.check()}\n")
+
+    if not venue.is_available():
+        raise typer.Exit(code=1)
+
+    if orders:
+        working = venue.working_orders()
+        console.print(f"[bold]Working orders[/bold]: {len(working)}")
+        for order in working:
+            console.print(
+                f"  {order.instrument.symbol:<8}{order.side.value:<6}"
+                f"{order.quantity:>10,.2f}  {order.status.name}"
+            )
+        console.print()
+
+    if reconcile:
+        settings = get_settings()
+        report = venue.reconcile(
+            Portfolio(starting_cash=settings.risk.account_equity)
+        )
+        console.print("[bold]Reconciliation[/bold]")
+        console.print(report.render())
+        if not report.is_clean:
+            raise typer.Exit(code=1)
+
+
 @app.command("cache-data")
 def cache_data(
     symbols: str = typer.Option("BTC-USD,ETH-USD,SOL-USD", help="Comma-separated."),

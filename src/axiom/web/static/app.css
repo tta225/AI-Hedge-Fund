@@ -393,3 +393,32 @@ tbody tr:last-child td { border-bottom: 0; }
   main { padding: 12px 12px 40px; }
   .chart-wrap { height: 340px; }
 }
+
+
+/* ─────────────────────── agent pipeline ─────────────────────── */
+
+/* Facts and narrative must never look like the same kind of thing. The border
+ * and italic are load-bearing: one column is measured, the other is generated,
+ * and a reader has to be able to tell at a glance. */
+.agent-narrative {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--info);
+  background: var(--bg-inset);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  font-size: 13px;
+  line-height: 1.65;
+  color: var(--text-dim);
+  font-style: italic;
+}
+
+.agent-warnings {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--warn);
+}
+
+#agent-stages .stat-label { margin-top: 12px; }
+#agent-stages .stat-label:first-child { margin-top: 0; }

@@ -314,3 +314,100 @@ def backtest_payload(result: BacktestResult, strategy: str) -> dict[str, Any]:
             "rejections": dict(result.rejections),
         },
     }
+
+
+def agent_payload(result: object) -> dict[str, Any]:
+    """The agent pipeline, with facts and narrative kept apart.
+
+    `AgentReport` separates measured `facts` from generated `narrative` on
+    purpose, and the wire format preserves that split. Merging them in the UI
+    would destroy the one property that makes an LLM safe to have in a trading
+    loop: a reader can always tell which numbers were computed and which prose
+    was written.
+    """
+    reports = []
+    for report in result.reports:  # type: ignore[attr-defined]
+        reports.append(
+            {
+                "role": report.role.value,
+                "facts": {k: _jsonable(v) for k, v in report.facts.items()},
+                "narrative": report.narrative,
+                "warnings": list(report.warnings),
+                "used_llm": report.used_llm,
+                "model": report.model,
+                "produced_at": report.produced_at.isoformat(),
+            }
+        )
+    return {
+        "reports": reports,
+        "approval_required": result.approval_required,  # type: ignore[attr-defined]
+        "approval_summary": result.approval_summary,  # type: ignore[attr-defined]
+        "warnings": list(result.all_warnings),  # type: ignore[attr-defined]
+        # There is deliberately no execute stage. Stated on the wire so a UI
+        # cannot imply one exists.
+        "can_execute": False,
+    }
+
+
+def _jsonable(value: Any) -> Any:
+    """Coerce an agent fact to something JSON can carry."""
+    if isinstance(value, (str, bool, int)) or value is None:
+        return value
+    if isinstance(value, float):
+        return _num(value)
+    if isinstance(value, (list, tuple)):
+        return [_jsonable(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _jsonable(v) for k, v in value.items()}
+    if isinstance(value, pd.Timestamp):
+        return _ms(value)
+    if hasattr(value, "value"):  # enums
+        return _jsonable(value.value)
+    return str(value)
+
+
+def ranking_payload(ranking: object) -> dict[str, Any]:
+    """Ranked signals plus every score behind them.
+
+    `likelihood` travels with its disclaimer attached rather than as a bare
+    number, because a bare 0-1 score in a UI reads as a probability and it is
+    not one.
+    """
+    return {
+        "as_of": _ms(ranking.as_of),  # type: ignore[attr-defined]
+        "folds": ranking.folds,  # type: ignore[attr-defined]
+        "refusal": ranking.refusal,  # type: ignore[attr-defined]
+        "notes": list(ranking.notes),  # type: ignore[attr-defined]
+        "likelihood_is_not_a_probability": True,
+        "signals": [
+            {
+                "strategy": s.strategy_key,
+                "family": s.family.value,
+                "direction": str(s.signal.direction),
+                "entry": _num(s.signal.entry),
+                "stop": _num(s.signal.stop),
+                "targets": [_num(t) for t in s.signal.targets],
+                "rationale": s.signal.rationale,
+                "likelihood": _num(s.likelihood),
+                "deflated_r": _num(s.score.deflated_r),
+                "trades": s.score.trades,
+                "concordant": list(s.concordant),
+                "concordant_families": list(s.concordant_families),
+                "notes": list(s.notes),
+            }
+            for s in ranking.signals  # type: ignore[attr-defined]
+        ],
+        "scores": [
+            {
+                "strategy": k,
+                "family": v.family.value,
+                "trades": v.trades,
+                "mean_r": _num(v.mean_r),
+                "shrunk_r": _num(v.shrunk_r),
+                "deflated_r": _num(v.deflated_r),
+                "win_rate": _num(v.win_rate),
+                "excluded": v.excluded,
+            }
+            for k, v in ranking.scores.items()  # type: ignore[attr-defined]
+        ],
+    }

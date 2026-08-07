@@ -885,6 +885,145 @@ async function runBacktest() {
   }
 }
 
+// ── agents
+
+function renderAgents(payload) {
+  const pipeline = payload.pipeline;
+  renderProvenance(payload.provenance);
+
+  const llm = $('#agent-llm');
+  llm.textContent = payload.llm_enabled ? 'LLM enabled' : 'deterministic (no ANTHROPIC_API_KEY)';
+  llm.className = 'pill ' + (payload.llm_enabled ? 'pill-ok' : 'pill-muted');
+
+  const gate = $('#agent-gate');
+  gate.hidden = false;
+  gate.replaceChildren(
+    el('strong', null, 'HUMAN APPROVAL REQUIRED — this pipeline cannot place an order. '),
+    el('span', null, pipeline.approval_summary || '')
+  );
+
+  const host = $('#agent-stages');
+  host.replaceChildren(...pipeline.reports.map((report) => {
+    const panel = el('div', 'panel');
+    const head = el('div', 'panel-head');
+    head.appendChild(el('h2', null, report.role));
+    head.appendChild(
+      el('span', 'pill ' + (report.used_llm ? 'pill-ok' : 'pill-muted'),
+         report.used_llm ? `narrative · ${report.model || 'llm'}` : 'facts only')
+    );
+    panel.appendChild(head);
+
+    const body = el('div', 'panel-body');
+
+    // Facts and narrative are kept visually distinct, not just structurally.
+    // Merging them is the one thing that would make the LLM unsafe here.
+    const facts = Object.entries(report.facts || {});
+    if (facts.length) {
+      body.appendChild(el('div', 'stat-label', 'measured facts'));
+      const dl = el('dl', 'kv');
+      facts.forEach(([k, v]) => {
+        dl.appendChild(el('dt', null, k));
+        dl.appendChild(el('dd', null, formatFact(v)));
+      });
+      body.appendChild(dl);
+    }
+
+    if (report.narrative) {
+      body.appendChild(el('div', 'stat-label', 'generated narrative'));
+      const prose = el('p', 'agent-narrative', report.narrative);
+      body.appendChild(prose);
+    }
+
+    if (report.warnings && report.warnings.length) {
+      body.appendChild(el('div', 'stat-label', 'warnings'));
+      const ul = el('ul', 'agent-warnings');
+      report.warnings.forEach((w) => ul.appendChild(el('li', null, w)));
+      body.appendChild(ul);
+    }
+
+    panel.appendChild(body);
+    return panel;
+  }));
+}
+
+function formatFact(value) {
+  if (value === null || value === undefined) return '—';
+  if (typeof value === 'number') return fmt.num(value);
+  if (Array.isArray(value)) return value.map(formatFact).join(', ') || '—';
+  if (typeof value === 'object') {
+    return Object.entries(value).map(([k, v]) => `${k}=${formatFact(v)}`).join('  ') || '—';
+  }
+  return String(value);
+}
+
+async function runAgents() {
+  const btn = $('#run-agents');
+  btn.disabled = true;
+  try {
+    const payload = await api('/api/pipeline', {
+      ...query(),
+      strategy: $('#agent-strategy').value,
+      equity: parseFloat($('#agent-equity').value) || 250000,
+    });
+    renderAgents(payload);
+  } catch (err) {
+    toast(err.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ── broker
+
+function renderBroker(payload) {
+  const live = $('#broker-live');
+  live.textContent = payload.is_live ? 'LIVE — REAL MONEY' : 'paper — no real money';
+  live.className = 'pill ' + (payload.is_live ? 'pill-bad' : 'pill-ok');
+
+  const account = payload.account || {};
+  $('#broker-stats').replaceChildren(
+    statTile('Venue', payload.venue || '—', { sub: payload.available ? 'connected' : 'no credentials' }),
+    statTile('Equity', fmt.money(parseFloat(account.equity))),
+    statTile('Buying power', fmt.money(parseFloat(account.buying_power))),
+    statTile('Cash', fmt.money(parseFloat(account.cash))),
+    statTile('Positions', String((payload.positions || []).length)),
+    statTile('Status', account.status || '—'),
+  );
+
+  const recon = $('#broker-recon');
+  if (payload.reconciliation) {
+    const r = payload.reconciliation;
+    const box = el('div', 'callout ' + (r.is_clean ? 'callout-info' : 'callout-warn'));
+    box.appendChild(el('strong', null, r.is_clean ? 'Reconciled. ' : 'RECONCILIATION FAILED — do not trade until resolved. '));
+    box.appendChild(el('span', null, r.render || ''));
+    recon.replaceChildren(box);
+  } else {
+    recon.replaceChildren();
+  }
+
+  const rows = (payload.positions || []).map((p) => [
+    p.symbol,
+    { text: fmt.num(p.quantity, 2), cls: p.quantity >= 0 ? 'up' : 'down' },
+    fmt.price(p.average_price),
+    fmt.money(p.market_value),
+    { text: fmt.money(p.unrealised_pnl), cls: p.unrealised_pnl >= 0 ? 'up' : 'down' },
+  ]);
+  $('#broker-positions').replaceChildren(
+    table(['Symbol', 'Qty', 'Avg price', 'Market value', 'Unrealised'], rows,
+      payload.available ? 'No open positions at the broker.' : 'No broker credentials configured.')
+  );
+
+  if (payload.error) toast(payload.error);
+}
+
+async function loadBroker(reconcile = false) {
+  try {
+    renderBroker(await api('/api/broker' + (reconcile ? '?reconcile=true' : '')));
+  } catch (err) {
+    toast(err.message);
+  }
+}
+
 // ── data sources
 
 async function loadStatus() {
@@ -926,6 +1065,7 @@ function switchView(name) {
   if (name === 'dashboard') chart.draw();
   if (name === 'backtest') equityChart.draw();
   if (name === 'data') loadStatus();
+  if (name === 'broker') loadBroker();
 }
 
 async function boot() {
@@ -944,6 +1084,9 @@ async function boot() {
   $('#run').addEventListener('click', runAnalyse);
   $('#run-backtest').addEventListener('click', runBacktest);
   $('#refresh-status').addEventListener('click', loadStatus);
+  $('#run-agents').addEventListener('click', runAgents);
+  $('#refresh-broker').addEventListener('click', () => loadBroker(false));
+  $('#run-reconcile').addEventListener('click', () => loadBroker(true));
   $('#symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') runAnalyse(); });
 
   $$('#legend input').forEach((box) => {
@@ -971,13 +1114,13 @@ async function boot() {
         return opt;
       })
     );
-    $('#strategy').replaceChildren(
-      ...meta.strategies.map((s) => {
-        const opt = el('option', null, s);
-        opt.value = s;
-        return opt;
-      })
-    );
+    const strategyOptions = () => meta.strategies.map((s) => {
+      const opt = el('option', null, s);
+      opt.value = s;
+      return opt;
+    });
+    $('#strategy').replaceChildren(...strategyOptions());
+    $('#agent-strategy').replaceChildren(...strategyOptions());
   } catch (err) {
     toast('Could not reach the AXIOM API: ' + err.message);
     return;

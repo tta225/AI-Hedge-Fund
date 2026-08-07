@@ -21,6 +21,8 @@
   <nav class="tabs" role="tablist">
     <button class="tab is-active" role="tab" data-view="dashboard">Dashboard</button>
     <button class="tab" role="tab" data-view="backtest">Backtest</button>
+    <button class="tab" role="tab" data-view="agents">Agents</button>
+    <button class="tab" role="tab" data-view="broker">Broker</button>
     <button class="tab" role="tab" data-view="data">Data Sources</button>
   </nav>
 
@@ -153,6 +155,60 @@
   <div class="panel">
     <div class="panel-head"><h2>Trades</h2></div>
     <div class="panel-body table-scroll table-scroll-tall" id="trades-panel"></div>
+  </div>
+</div>
+
+<!-- ══════════════════════════ AGENTS ══════════════════════════ -->
+<div class="view" id="view-agents">
+  <div class="callout callout-info">
+    <strong>Research → Debate → Backtest → Risk → Review.</strong>
+    There is deliberately <strong>no execute stage</strong>. The pipeline ends in an
+    approval request a human acts on; it cannot place an order.
+    Each stage separates <em>facts</em> — measured by the engines — from
+    <em>narrative</em>, which is written by a language model. They are never merged,
+    so you can always tell which is which.
+  </div>
+
+  <section class="controls controls-sub">
+    <div class="field">
+      <label for="agent-strategy">Strategy</label>
+      <select id="agent-strategy"></select>
+    </div>
+    <div class="field">
+      <label for="agent-equity">Equity ($)</label>
+      <input id="agent-equity" type="number" min="1000" step="1000" value="250000" />
+    </div>
+    <button id="run-agents" class="btn btn-primary">Run pipeline</button>
+    <span id="agent-llm" class="pill pill-muted"></span>
+  </section>
+
+  <div id="agent-gate" class="callout callout-warn" hidden></div>
+  <div id="agent-stages"></div>
+</div>
+
+<!-- ══════════════════════════ BROKER ══════════════════════════ -->
+<div class="view" id="view-broker">
+  <div class="callout callout-info">
+    <strong>Paper account.</strong> This venue reports <code>is_live = false</code>
+    and cannot move real money. <strong>Reconciliation is the part that matters</strong>:
+    the broker's book and this platform's book drift for ordinary reasons — a manual
+    trade, a corporate action, a fill missed during a restart — and the drift is silent.
+    A position the broker holds that the platform does not know about is unmanaged:
+    nothing here will size against it, stop it out, or close it.
+  </div>
+
+  <section class="controls controls-sub">
+    <button id="refresh-broker" class="btn btn-primary">Refresh</button>
+    <button id="run-reconcile" class="btn btn-ghost">Reconcile</button>
+    <span id="broker-live" class="pill pill-muted"></span>
+  </section>
+
+  <div class="statrow" id="broker-stats"></div>
+  <div id="broker-recon"></div>
+
+  <div class="panel">
+    <div class="panel-head"><h2>Positions at the broker</h2></div>
+    <div class="panel-body table-scroll" id="broker-positions"></div>
   </div>
 </div>
 

@@ -141,20 +141,27 @@ still not download one:
 ```
 cas-server.xethub.hf.co
 transfer.xethub.hf.co
-xethub.hf.co
+us.aws.cdn.hf.co
+eu.aws.cdn.hf.co
+cdn.hf.co
 s3.hf.co
 cdn-lfs.hf.co
 cdn-lfs-us-1.hf.co
 ```
 
-The first one, `cas-server.xethub.hf.co`, is the one that actually blocks the
-download — the rest are the other routes Hugging Face may use. Add all six.
-
-If the setting accepts wildcards, this single line replaces all six:
+**Use the wildcard if your settings accept one.** This single line replaces all
+eight and, more importantly, survives Hugging Face changing them:
 
 ```
 *.hf.co
 ```
+
+That matters because the download happens in **two hops**, and only the first
+one has a fixed name. `cas-server.xethub.hf.co` takes your request and replies
+with a temporary signed link to a regional CDN — `us.aws.cdn.hf.co` today,
+possibly a different region tomorrow. Allowing the first host alone gets you a
+new error naming the second, which is confusing precisely because it looks like
+the fix did not work when it half did.
 
 To add them:
 
@@ -191,58 +198,61 @@ no such restriction and your keys will work immediately.
 
 ---
 
-## About your Hugging Face dataset
+## About your Hugging Face bucket
 
-You said the dataset is in your buckets. Here is exactly what was checked and
-what came back:
+**It is a bucket, not a dataset — and it is full of data.** This page previously
+said the opposite, twice. Both times the reasoning was wrong in the same way, so
+it is worth writing down.
 
-* Your token is **valid**. It signs in as `Tta225` and has read permission.
-* Asking for `Tta225/OHLCV-1m-bucket` **while signed in as you** returns
-  **404 Not Found** — that is the Hub saying "no such dataset", not "you are not
-  allowed".
-* Listing everything on your account returns **0 datasets, 0 models, 0 spaces**.
-
-So the app is not failing to see a dataset that is there. As far as the Hub is
-concerned, nothing has been uploaded to that account yet.
-
-**A "bucket" on the Hugging Face website is not the same as a dataset repository.**
-Files sitting in a storage bucket, or in a folder you have not published, are not
-visible through the datasets API — which is what the app uses.
-
-### What to do
-
-Go to your dataset page in your browser and **copy the address bar**. It will
-look like:
+Your data lives at:
 
 ```
-https://huggingface.co/datasets/SOMETHING/SOMETHING-ELSE
+https://huggingface.co/buckets/Tta225/OHLCV-1m-bucket
 ```
 
-Send me that link. Then we can test the exact name:
+Note `/buckets/`, not `/datasets/`. Those are **two different products**. A
+Storage Bucket is plain file storage; a Dataset is a versioned repository. The
+app originally only knew how to read datasets, so it asked the *datasets* service
+about your bucket, got "not found", and reported that your data did not exist.
+
+The lesson: **asking the wrong service and getting "no" tells you about the
+service, not about your data.**
+
+What is actually in there:
+
+| | |
+|---|---|
+| Files | **411 monthly Parquet files** |
+| Contents | 1-minute open/high/low/close/volume bars |
+| Span | **January 1992 → March 2026** (34 years) |
+| Size | **87.7 GB** |
+| Visibility | public |
+
+### How the app reads it now
 
 ```
-python -m axiom.cli data-check --dataset PASTE-THE-PART-AFTER-datasets/-HERE
+python -m axiom.cli data-check --bucket Tta225/OHLCV-1m-bucket
 ```
 
-For example, if the address is
-`https://huggingface.co/datasets/Tta225/my-bars`, the command is:
+Note `--bucket`, not `--dataset`.
 
-```
-python -m axiom.cli data-check --dataset Tta225/my-bars
-```
+**It does not download 87 GB.** It reads the list of filenames first — which is
+free — works out which months your date range needs, and downloads only those:
 
-You will get one of two clear answers:
+| What you ask for | Files pulled | Downloaded |
+|---|---|---|
+| 6 weeks | 2 | 0.67 GB |
+| 1 year | 12 | 4.0 GB |
 
-* `✓ authenticated as Tta225; 'Tta225/my-bars' resolves (private)` → it works.
-* `✗ ... did not resolve` → that name does not exist on the Hub.
+Downloaded files are kept in `data/cache/hf-bucket/`, so running the same
+backtest twice only downloads once.
 
-### If you have not actually uploaded it yet
+### The one thing still to confirm
 
-1. Go to https://huggingface.co/new-dataset
-2. Give it a name, choose **Private**, click **Create dataset**
-3. Click **Files** → **Add file** → **Upload files**, and upload your CSV or
-   Parquet files
-4. Then run the `data-check --dataset` command above with the new name
+Nobody has opened one of your files yet, so **the column names inside are
+unknown**. The app copes with most common namings automatically. If it complains
+about a missing timestamp or price column, tell me what the error says and it can
+be pointed at the right columns — no need to change your files.
 
 ---
 

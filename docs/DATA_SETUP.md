@@ -437,12 +437,23 @@ download fails — which looks confusing until you know the hosts differ:
 ```
 cas-server.xethub.hf.co
 transfer.xethub.hf.co
+us.aws.cdn.hf.co
+eu.aws.cdn.hf.co
+cdn.hf.co
 s3.hf.co
 cdn-lfs.hf.co
+cdn-lfs-us-1.hf.co
 ```
 
-Allow those alongside `huggingface.co`. `HFBucketProvider` names them in its
-error message when a download fails, so the failure diagnoses itself.
+Prefer `*.hf.co` if the setting accepts a wildcard. A Xet download is a
+**two-hop** exchange: `cas-server.xethub.hf.co` answers with a short-lived
+signed URL pointing at a *regional* CDN host, and only the first hop has a
+stable name. Allowlisting the CAS host alone therefore produces a second,
+different failure naming a host that was never on the list — which reads like
+the fix failed when it actually half-succeeded.
+
+`HFBucketProvider` names these hosts in its error when a download fails, so the
+failure diagnoses itself.
 
 > **Not verified end-to-end.** The listing, month-selection and caching paths
 > are tested. The download path could not be exercised where this was written —

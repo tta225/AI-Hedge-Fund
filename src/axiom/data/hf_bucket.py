@@ -232,10 +232,14 @@ class HFBucketProvider(BaseProvider):
             except Exception as exc:
                 raise ProviderError(
                     f"{self.name}: could not download from {self.bucket!r}: {exc}\n"
-                    f"  Bucket bytes are served by Xet (cas-server.xethub.hf.co, "
-                    f"transfer.xethub.hf.co) and s3.hf.co. If those hosts are "
-                    f"blocked by a network policy, listing succeeds and download "
-                    f"fails exactly like this — see docs/DATA_SETUP.md."
+                    f"  A Xet download is two hops: cas-server.xethub.hf.co "
+                    f"answers with a signed URL pointing at a regional CDN "
+                    f"(us.aws.cdn.hf.co, eu.aws.cdn.hf.co). BOTH must be "
+                    f"reachable — allowlisting only the first produces a second "
+                    f"failure naming the second, which looks like the fix did "
+                    f"not work. '*.hf.co' covers every hop. Listing uses "
+                    f"huggingface.co only, so it keeps succeeding throughout. "
+                    f"See docs/DATA_SETUP.md."
                 ) from exc
 
         return local_paths

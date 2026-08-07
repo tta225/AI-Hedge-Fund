@@ -239,18 +239,32 @@ AlpacaProvider(feed="sip")
 
 ## 2. Hugging Face — your own dataset
 
-> **`Tta225/OHLCV-1m-bucket` does not currently exist.** An earlier version of
-> this page said it was confirmed private, reasoning that a public dataset
-> resolves anonymously while this one returned 401. That inference was wrong:
-> the Hub returns 401 to an anonymous caller for a private repo *and* for one
-> that is absent, precisely so that absence cannot be probed. Checked again with
-> a valid token for the `Tta225` account, it returns 404, and the account owns no
-> datasets. Create and upload it before the instructions below apply.
+> **`Tta225/OHLCV-1m-bucket` is a Storage Bucket, not a dataset.** This page has
+> been wrong about it twice, and both errors are worth recording because they
+> are the same mistake in different clothes.
 >
-> `axiom data-check --dataset <id>` now makes this call authenticated and
-> reports the two cases apart.
+> *First*, it claimed the repo was "confirmed private" because an anonymous
+> request returned 401. That does not follow: the Hub returns 401 anonymously
+> for a private repo **and** for one that is absent, precisely so absence cannot
+> be probed.
+>
+> *Second*, after checking authenticated and getting 404 from
+> `/api/datasets/...`, this page concluded the repo did not exist. Also wrong.
+> `/api/buckets/Tta225/OHLCV-1m-bucket` returns **200**: it is public, holds
+> **411 monthly Parquet files** spanning **1992-01 to 2026-03**, and totals
+> **87.7 GB**. The 404 was correct and the inference from it was not — the repo
+> was never a dataset, and the datasets API cannot see any other repo type.
+>
+> The lesson both times: a negative result from one API is evidence about that
+> API, not about the world.
+>
+> **Buckets are a different repo type from datasets.** They are S3-like,
+> non-versioned, mutable object storage, and `datasets.load_dataset()` cannot
+> read them at all. Use [`HFBucketProvider`](#4-hugging-face-storage-buckets)
+> below, or `axiom data-check --bucket <id>`.
 
-The instructions below assume a dataset that exists.
+The rest of this section is about **datasets**. For buckets, skip to
+[Hugging Face Storage Buckets](#4-hugging-face-storage-buckets).
 
 ### Easiest option: make the dataset public
 
@@ -357,6 +371,85 @@ entry_series  = series                   # keep 1m for execution detail
 
 Resampling upward is safe and provenance-preserving. Resampling *down* is
 refused by design — it would invent bars that never traded.
+
+---
+
+## 4. Hugging Face Storage Buckets
+
+A **Storage Bucket** is a different repo type from a dataset: S3-like,
+non-versioned, mutable object storage. The distinction matters more than it
+sounds:
+
+* `datasets.load_dataset()` **cannot read a bucket**, at all.
+* `https://huggingface.co/api/datasets/<id>` returns **404** for a bucket.
+* The bucket lives at `https://huggingface.co/**buckets**/<id>`, and its API is
+  `https://huggingface.co/api/buckets/<id>`.
+
+Reading that 404 as "the repo does not exist" is a mistake this document made,
+and it is worth stating plainly: **a negative result from one API is evidence
+about that API, not about the world.**
+
+### Check a bucket
+
+```bash
+python -m axiom.cli data-check --bucket Tta225/OHLCV-1m-bucket
+```
+
+```
+HF bucket
+  ✓ bucket 'Tta225/OHLCV-1m-bucket' resolves (public): 413 files, 87.7 GB
+    objects : 411 parquet files (87.7 GB)
+    span    : 1992-01 → 2026-03 (from filenames, not from the data)
+```
+
+### Load bars from one
+
+```python
+from axiom.data import HFBucketProvider
+
+provider = HFBucketProvider("Tta225/OHLCV-1m-bucket", prefix="data/")
+print(provider.inspect())          # listing only — no download
+series = provider.fetch_bars(request)
+```
+
+**Only the months you ask for are downloaded.** The adapter reads the object
+listing (metadata, free) and parses the calendar month out of each filename, so
+a six-week window pulls 2 files (~0.7 GB) rather than all 411 (~87.7 GB). Files
+are cached under `data/cache/hf-bucket/`, so a repeated backtest costs nothing.
+
+| Window | Files | Downloaded |
+|---|---|---|
+| 6 weeks | 2 | 0.67 GB |
+| 1 year | 12 | 4.0 GB |
+| everything | 411 | 87.7 GB |
+
+If your filenames are not `..._YYYY-MM.parquet`, pass your own
+`filename_pattern` — a regex with named groups `year` and `month`. Files that do
+not match are always included rather than skipped, because silently dropping
+history is worse than a wasted download.
+
+### Buckets need more hosts than datasets do
+
+Bucket **metadata** comes from `huggingface.co`, but the **bytes** are served by
+Xet and the S3 gateway. On a restricted network the listing succeeds and the
+download fails — which looks confusing until you know the hosts differ:
+
+```
+cas-server.xethub.hf.co
+transfer.xethub.hf.co
+s3.hf.co
+cdn-lfs.hf.co
+```
+
+Allow those alongside `huggingface.co`. `HFBucketProvider` names them in its
+error message when a download fails, so the failure diagnoses itself.
+
+> **Not verified end-to-end.** The listing, month-selection and caching paths
+> are tested. The download path could not be exercised where this was written —
+> those Xet hosts were blocked — so the real files' **column schema is
+> unconfirmed**. The adapter is schema-flexible (see `column_map` and
+> `timestamp_column`) and `inspect()` deliberately does not claim to know the
+> columns. Fetch a narrow window first and check what comes back.
 
 ---
 

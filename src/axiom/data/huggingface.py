@@ -44,6 +44,50 @@ _COLUMN_ALIASES: dict[str, str] = {
 }
 
 
+def normalise_ohlcv_frame(
+    frame: pd.DataFrame,
+    *,
+    column_map: dict[str, str] | None = None,
+    timestamp_column: str | None = None,
+    provider_name: str = "provider",
+) -> pd.DataFrame:
+    """Lower-case, alias and index an arbitrary OHLCV frame by timestamp.
+
+    Shared by every adapter that ingests a user-supplied table — the dataset
+    adapter and the bucket adapter both need identical treatment, and two copies
+    of this would drift the moment one of them learned a new column alias.
+
+    Integer timestamps are resolved to seconds, milliseconds or nanoseconds from
+    their magnitude. Guessing wrong here silently places bars in 1970 or 55000,
+    which then fails much further downstream as an unrelated-looking error.
+    """
+    out = frame.copy()
+    out.columns = [str(c).strip().lower() for c in out.columns]
+    if column_map:
+        out = out.rename(columns={k.lower(): v for k, v in column_map.items()})
+    out = out.rename(columns=_COLUMN_ALIASES)
+
+    ts_col = timestamp_column.lower() if timestamp_column else None
+    if ts_col is None:
+        ts_col = next((c for c in _TIMESTAMP_CANDIDATES if c in out.columns), None)
+    if ts_col is None:
+        raise ProviderError(
+            f"{provider_name}: no timestamp column found in {sorted(out.columns)}. "
+            "Pass timestamp_column= explicitly."
+        )
+
+    stamps = out[ts_col]
+    if pd.api.types.is_numeric_dtype(stamps):
+        largest = float(stamps.max())
+        unit = "s" if largest < 1e11 else "ms" if largest < 1e14 else "ns"
+        index = pd.to_datetime(stamps, unit=unit, utc=True)
+    else:
+        index = pd.to_datetime(stamps, utc=True, format="mixed")
+
+    out = out.set_index(pd.DatetimeIndex(index)).drop(columns=[ts_col])
+    return out.sort_index()
+
+
 class HuggingFaceProvider(BaseProvider):
     """Reads OHLCV bars from a Hugging Face dataset."""
 
@@ -212,34 +256,12 @@ class HuggingFaceProvider(BaseProvider):
         return self._frame
 
     def _normalise_columns(self, frame: pd.DataFrame) -> pd.DataFrame:
-        out = frame.copy()
-        out.columns = [str(c).strip().lower() for c in out.columns]
-        if self.column_map:
-            out = out.rename(
-                columns={k.lower(): v for k, v in self.column_map.items()}
-            )
-        out = out.rename(columns=_COLUMN_ALIASES)
-
-        ts_col = self.timestamp_column.lower() if self.timestamp_column else None
-        if ts_col is None:
-            ts_col = next((c for c in _TIMESTAMP_CANDIDATES if c in out.columns), None)
-        if ts_col is None:
-            raise ProviderError(
-                f"{self.name}: no timestamp column found in {sorted(out.columns)}. "
-                "Pass timestamp_column= explicitly."
-            )
-
-        stamps = out[ts_col]
-        if pd.api.types.is_numeric_dtype(stamps):
-            # Epoch seconds, milliseconds, or nanoseconds — inferred from range.
-            largest = float(stamps.max())
-            unit = "s" if largest < 1e11 else "ms" if largest < 1e14 else "ns"
-            index = pd.to_datetime(stamps, unit=unit, utc=True)
-        else:
-            index = pd.to_datetime(stamps, utc=True, format="mixed")
-
-        out = out.set_index(pd.DatetimeIndex(index)).drop(columns=[ts_col])
-        return out.sort_index()
+        return normalise_ohlcv_frame(
+            frame,
+            column_map=self.column_map,
+            timestamp_column=self.timestamp_column,
+            provider_name=self.name,
+        )
 
     def _fetch_raw(self, request: BarRequest) -> pd.DataFrame:
         frame = self.load()

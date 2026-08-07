@@ -378,8 +378,15 @@ def data_check(
     dataset: str = typer.Option(
         None,
         "--dataset",
-        help="Hugging Face dataset id to verify, e.g. user/my-ohlcv. "
+        help="Hugging Face DATASET id to verify, e.g. user/my-ohlcv. "
         "Without it only the token is checked, not that any dataset resolves.",
+    ),
+    bucket: str = typer.Option(
+        None,
+        "--bucket",
+        help="Hugging Face STORAGE BUCKET id to verify, e.g. user/my-bucket. "
+        "Buckets are a different repo type from datasets and the datasets API "
+        "returns 404 for one — check the right kind.",
     ),
 ) -> None:
     """Report which market data sources are reachable and credentialed.
@@ -430,6 +437,20 @@ def data_check(
     report("Coinbase", CoinbaseProvider().check_reachable())
     console.print()
 
+    if bucket:
+        from axiom.data import HFBucketProvider
+
+        provider = HFBucketProvider(bucket)
+        status = provider.check_bucket()
+        if status.startswith("✓"):
+            try:
+                status += "\n" + "\n".join(
+                    f"  {line}" for line in provider.inspect().splitlines()
+                )
+            except Exception as exc:  # listing can fail independently of the probe
+                status += f"\n  ? could not list objects: {exc}"
+        report("HF bucket", status)
+
     if dataset:
         report("Hugging Face", HuggingFaceProvider(dataset).check_dataset())
     else:
@@ -438,7 +459,9 @@ def data_check(
         # to a working setup until the first load fails.
         status = HuggingFaceProvider("unused/unused").check_token()
         if status.startswith("✓"):
-            status += "\n  ? pass --dataset <id> to verify a dataset resolves"
+            status += (
+                "\n  ? pass --dataset <id> or --bucket <id> to verify a repo resolves"
+            )
         report("Hugging Face", status)
 
     registry = default_registry()

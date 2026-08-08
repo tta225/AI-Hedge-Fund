@@ -39,7 +39,7 @@
 <section class="controls" aria-label="Query controls">
   <div class="field">
     <label for="symbol">Instrument</label>
-    <input id="symbol" list="symbols" value="ES" autocomplete="off" spellcheck="false" />
+    <input id="symbol" list="symbols" value="SPY" autocomplete="off" spellcheck="false" />
     <datalist id="symbols"></datalist>
   </div>
   <div class="field">
@@ -178,12 +178,33 @@
       <label for="agent-equity">Equity ($)</label>
       <input id="agent-equity" type="number" min="1000" step="1000" value="250000" />
     </div>
+    <label class="check" title="Score every strategy walk-forward and let the evidence pick one.">
+      <input id="agent-ensemble" type="checkbox" />
+      <span>Pick best strategy</span>
+    </label>
     <button id="run-agents" class="btn btn-primary">Run pipeline</button>
     <span id="agent-llm" class="pill pill-muted"></span>
   </section>
 
+  <div class="callout callout-warn" id="agent-ensemble-note" hidden>
+    <strong>Picking a strategy is itself a search.</strong> Every strategy in the
+    archive is scored across walk-forward folds and the best record wins — but the
+    best of 49 records is inflated by the act of choosing it, the same way the best
+    of 49 coin flips looks like skill. The <code>deflated_r</code> figure already
+    charges for that; <code>raw_mean_r</code> does not. The selection is made by
+    arithmetic before any agent sees it, and takes a minute or two to run.
+  </div>
+
   <div id="agent-gate" class="callout callout-warn" hidden></div>
   <div id="agent-stages"></div>
+
+  <div class="panel" id="agent-scoreboard-panel" hidden>
+    <div class="panel-head">
+      <h2>Every strategy scored</h2>
+      <span class="dim">The ones that lost, so the ranking can be audited</span>
+    </div>
+    <div class="panel-body table-scroll" id="agent-scoreboard"></div>
+  </div>
 </div>
 
 <!-- ══════════════════════════ BROKER ══════════════════════════ -->

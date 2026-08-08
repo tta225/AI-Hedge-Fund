@@ -897,10 +897,17 @@ function renderAgents(payload) {
 
   const gate = $('#agent-gate');
   gate.hidden = false;
+  // An ensemble run that selected nothing has nothing to approve. Showing the
+  // approval banner anyway would imply a decision is waiting on the reader.
+  const pending = pipeline.approval_required !== false;
   gate.replaceChildren(
-    el('strong', null, 'HUMAN APPROVAL REQUIRED — this pipeline cannot place an order. '),
+    el('strong', null, pending
+      ? 'HUMAN APPROVAL REQUIRED — this pipeline cannot place an order. '
+      : 'NOTHING TO APPROVE — no strategy was selected. '),
     el('span', null, pipeline.approval_summary || '')
   );
+
+  renderScoreboard(pipeline.ranking);
 
   const host = $('#agent-stages');
   host.replaceChildren(...pipeline.reports.map((report) => {
@@ -956,20 +963,65 @@ function formatFact(value) {
   return String(value);
 }
 
+// The strategies that lost. A ranking that only ever shows its winner cannot
+// be audited: the gap between first place and last is the clearest evidence of
+// whether the ordering means anything, and it is invisible from the top row.
+function renderScoreboard(ranking) {
+  const panel = $('#agent-scoreboard-panel');
+  if (!ranking || !(ranking.scoreboard || []).length) {
+    panel.hidden = true;
+    return;
+  }
+  panel.hidden = false;
+
+  const rows = ranking.scoreboard.map((s) => {
+    if (s.excluded) {
+      // Kept on the board rather than dropped. An excluded strategy that
+      // vanishes looks like one that was never tried, which understates how
+      // wide the search was.
+      return [s.key, s.family, '—', '—', '—',
+              { text: `excluded — ${s.excluded}`, cls: 'dim' }];
+    }
+    return [
+      s.key,
+      s.family,
+      String(s.trades),
+      // fmt.unit, not num + 'R': a missing value must render as '—', not '—R'.
+      fmt.unit(s.raw_mean_r, 'R', 3),
+      { text: fmt.unit(s.deflated_r, 'R', 3), cls: s.deflated_r > 0 ? 'up' : 'down' },
+      fmt.pct(s.win_rate * 100),
+    ];
+  });
+
+  $('#agent-scoreboard').replaceChildren(
+    table(
+      ['Strategy', 'Family', 'OOS trades', 'Raw', 'Deflated', 'Win rate'],
+      rows,
+      'Nothing scored.'
+    )
+  );
+}
+
 async function runAgents() {
   const btn = $('#run-agents');
+  const ensemble = $('#agent-ensemble').checked;
   btn.disabled = true;
+  // Scoring the whole archive walk-forward is minutes, not seconds. A button
+  // that just goes quiet reads as a hang.
+  btn.textContent = ensemble ? 'Scoring archive…' : 'Running…';
   try {
     const payload = await api('/api/pipeline', {
       ...query(),
       strategy: $('#agent-strategy').value,
       equity: parseFloat($('#agent-equity').value) || 250000,
+      ensemble,
     });
     renderAgents(payload);
   } catch (err) {
     toast(err.message);
   } finally {
     btn.disabled = false;
+    btn.textContent = 'Run pipeline';
   }
 }
 
@@ -1096,6 +1148,13 @@ async function boot() {
   $('#run-backtest').addEventListener('click', runBacktest);
   $('#refresh-status').addEventListener('click', loadStatus);
   $('#run-agents').addEventListener('click', runAgents);
+  // The strategy picker becomes irrelevant once the archive chooses for you.
+  // Leaving it live would suggest it still has a say.
+  $('#agent-ensemble').addEventListener('change', (e) => {
+    const on = e.target.checked;
+    $('#agent-strategy').disabled = on;
+    $('#agent-ensemble-note').hidden = !on;
+  });
   $('#refresh-broker').addEventListener('click', () => loadBroker(false));
   $('#run-reconcile').addEventListener('click', () => loadBroker(true));
   // Switching venue reloads without reconciling: a reconciliation carried over

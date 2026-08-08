@@ -88,11 +88,18 @@ class TestPipeline:
         assert "cannot place an order" in result.render()
 
     def test_pipeline_has_no_execute_stage(self) -> None:
-        """The safety property, asserted structurally."""
+        """The safety property, asserted structurally.
+
+        Pinned as "no role that places orders" rather than as a frozen list of
+        roles. The list changes for legitimate reasons — SELECTION was added so
+        the pipeline could choose a strategy from the archive — and a test that
+        fails on every such change gets updated reflexively, which is exactly
+        how an EXECUTE role would eventually slip past it.
+        """
         assert not hasattr(AgentPipeline, "execute")
-        assert AgentRole.__members__.keys() == {
-            "RESEARCH", "DEBATE", "BACKTEST", "RISK", "REVIEW"
-        }
+        forbidden = {"execute", "order", "submit", "trade", "route", "place"}
+        assert not forbidden & {name.lower() for name in AgentRole.__members__}
+        assert "SELECTION" in AgentRole.__members__
 
     def test_narrative_is_empty_without_an_llm(
         self, synthetic_series: OHLCVSeries

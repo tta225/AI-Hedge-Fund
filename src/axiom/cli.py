@@ -228,12 +228,27 @@ def pipeline(
     synthetic: bool = typer.Option(False),
     seed: int = typer.Option(11),
     equity: float = typer.Option(250_000.0),
+    ensemble: bool = typer.Option(
+        False,
+        "--ensemble",
+        help="Pick the strategy from the whole archive by out-of-sample record.",
+    ),
+    folds: int = typer.Option(4, help="Walk-forward splits, with --ensemble."),
+    scoreboard: bool = typer.Option(
+        False, help="Also print every strategy's record, not just the winner."
+    ),
 ) -> None:
     """Run the Research → Debate → Backtest → Risk → Review agent pipeline.
 
     Terminates in a human approval request. It cannot place an order.
+
+    With `--ensemble` the archive is scored walk-forward first and the best
+    record is selected, adding a Selection stage ahead of the other five. The
+    choice is made by arithmetic before any agent sees it — a model asked to
+    pick among 49 records will find a story for whichever one won, and a story
+    is indistinguishable from an edge until money is on it.
     """
-    if strategy not in STRATEGIES:
+    if not ensemble and strategy not in STRATEGIES:
         console.print(f"[red]Unknown strategy {strategy!r}.[/red]")
         raise typer.Exit(code=1)
 
@@ -246,14 +261,33 @@ def pipeline(
             "omitted.[/yellow]\n"
         )
 
-    outcome = AgentPipeline(settings.agents).run(
-        series,
-        STRATEGIES[strategy](),
-        risk_settings=RiskSettings(
-            account_equity=equity, max_gross_exposure_pct=2000.0
-        ),
+    risk_settings = RiskSettings(
+        account_equity=equity, max_gross_exposure_pct=2000.0
     )
+
+    if ensemble:
+        console.print(
+            f"[dim]Scoring {len(ARCHIVE)} strategies over {folds} walk-forward "
+            f"folds. This takes a while — every strategy is run on every "
+            f"fold.[/dim]\n"
+        )
+        outcome = AgentPipeline(settings.agents).run_ensemble(
+            series, risk_settings=risk_settings, folds=folds
+        )
+    else:
+        outcome = AgentPipeline(settings.agents).run(
+            series, STRATEGIES[strategy](), risk_settings=risk_settings
+        )
+
     console.print(outcome.render())
+
+    if scoreboard and outcome.ranking is not None:
+        # The losers, printed alongside the winner. A ranking that only ever
+        # shows what it picked cannot be audited — and the gap between the top
+        # record and the tenth is the clearest signal of whether the ordering
+        # means anything at all.
+        console.print("\n[bold]Every strategy scored[/bold]")
+        console.print(outcome.ranking.scoreboard())
 
 
 @app.command()

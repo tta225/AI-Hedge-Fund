@@ -79,7 +79,14 @@ app = FastAPI(
 class SeriesQuery(BaseModel):
     """Common bar-selection parameters."""
 
-    symbol: str = Field("ES", max_length=32)
+    #: SPY, not ES. ES is the instrument this platform is really about, but it
+    #: is a *future*, and no free provider carries futures — so defaulting to it
+    #: means every first load fails with a 503 before the user has done anything
+    #: wrong. It used to "work" only because an equity provider answered ES with
+    #: Eversource Energy. A default that needs a paid subscription to render is
+    #: not a good first impression; a default that renders the wrong company is
+    #: worse. SPY is served by Alpaca, by the HF bucket, and by yfinance.
+    symbol: str = Field("SPY", max_length=32)
     timeframe: str = Field("15m", max_length=8)
     days: int = Field(30, ge=1, le=MAX_DAYS)
     synthetic: bool = False
@@ -279,6 +286,14 @@ class PipelineQuery(SeriesQuery):
     days: int = Field(120, ge=1, le=MAX_DAYS)
     strategy: str = Field("silver-bullet", max_length=64)
     equity: float = Field(250_000.0, gt=0, le=1e12)
+    ensemble: bool = Field(
+        False,
+        description=(
+            "Select the strategy from the whole archive by out-of-sample "
+            "record instead of using `strategy`."
+        ),
+    )
+    folds: int = Field(3, ge=2, le=8, description="Walk-forward splits, if ensemble.")
 
 
 class RankQuery(SeriesQuery):
@@ -303,7 +318,7 @@ def pipeline(query: PipelineQuery) -> dict[str, Any]:
     an LLM safe in a trading loop — that a reader can always tell which numbers
     were computed and which prose was written.
     """
-    if query.strategy not in STRATEGIES:
+    if not query.ensemble and query.strategy not in STRATEGIES:
         raise HTTPException(
             status_code=400,
             detail={
@@ -315,13 +330,18 @@ def pipeline(query: PipelineQuery) -> dict[str, Any]:
 
     series = _load_series(query)
     settings = get_settings()
-    result = AgentPipeline(settings.agents).run(
-        series,
-        STRATEGIES[query.strategy](),
-        risk_settings=RiskSettings(
-            account_equity=query.equity, max_gross_exposure_pct=2000.0
-        ),
+    risk_settings = RiskSettings(
+        account_equity=query.equity, max_gross_exposure_pct=2000.0
     )
+    agents = AgentPipeline(settings.agents)
+    if query.ensemble:
+        result = agents.run_ensemble(
+            series, risk_settings=risk_settings, folds=query.folds
+        )
+    else:
+        result = agents.run(
+            series, STRATEGIES[query.strategy](), risk_settings=risk_settings
+        )
     return {
         "pipeline": agent_payload(result),
         "llm_enabled": settings.agents.enabled,

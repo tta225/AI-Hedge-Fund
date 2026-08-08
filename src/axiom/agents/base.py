@@ -36,6 +36,9 @@ from axiom.core.provenance import Provenance
 
 
 class AgentRole(str, Enum):
+    #: Runs first when the pipeline is asked to pick a strategy rather than be
+    #: handed one. Everything downstream then reasons about that choice.
+    SELECTION = "selection"
     RESEARCH = "research"
     DEBATE = "debate"
     BACKTEST = "backtest"

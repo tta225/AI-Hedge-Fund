@@ -14,8 +14,139 @@ from axiom.core.types import Direction
 from axiom.ict.engine import ICTEngine, confluence_score
 from axiom.ict.models import ICTState
 from axiom.portfolio.positions import Portfolio
+from axiom.research.ensemble import EnsembleRanking
 from axiom.risk.manager import RiskManager
 from axiom.strategy.base import Signal, Strategy
+
+
+class SelectionAgent(Agent):
+    """Chooses which strategy to trade, out of the whole archive.
+
+    This is the agent with the most opportunity to mislead, so it is the one
+    with the most warnings.
+
+    Every other agent in this pipeline reasons about a strategy someone already
+    chose. This one does the choosing, across 49 strategies in 9 families — and
+    picking the best of 49 records is *itself* a search. The best of 49 coin
+    flips looks like skill. `SignalEnsemble` handles the statistics (walk-forward
+    folds, shrinkage toward zero by sample size, then a multiple-testing
+    deflation); what this agent adds is refusing to let the resulting number be
+    read as something it is not.
+
+    Two specific misreadings it exists to block:
+
+    **The likelihood score is not a probability.** It is a relative ordering in
+    [0, 1] across the strategies that happen to be signalling right now. A 0.9
+    does not mean 90% of anything; with two live signals the better one scores
+    1.0 by construction.
+
+    **Agreement between strategies is not independent confirmation.** Twelve
+    trend-following rules agreeing is one opinion measured twelve times. Which
+    is why agreement is counted in *families* as well as strategies, and why the
+    two numbers are reported side by side rather than summed.
+    """
+
+    role = AgentRole.SELECTION
+
+    def gather_facts(self, **inputs: Any) -> tuple[dict[str, Any], list[str]]:
+        ranking: EnsembleRanking = inputs["ranking"]
+
+        facts: dict[str, Any] = {
+            "strategies_evaluated": len(ranking.scores),
+            "walk_forward_folds": ranking.folds,
+            "strategies_signalling_now": len(ranking.signals),
+            "as_of": str(ranking.as_of),
+        }
+
+        warnings: list[str] = list(ranking.notes)
+
+        if ranking.refusal:
+            facts["selected"] = None
+            facts["refusal"] = ranking.refusal
+            warnings.insert(0, f"No strategy selected: {ranking.refusal}")
+            return facts, warnings
+
+        best = ranking.best
+        if best is None:
+            facts["selected"] = None
+            warnings.insert(
+                0,
+                "No strategy has a live setup. That is a finding, not a gap — "
+                "the honest output of a ranking with nothing to rank is silence.",
+            )
+            return facts, warnings
+
+        usable = [s for s in ranking.scores.values() if s.is_usable]
+        facts.update({
+            "selected": best.strategy_key,
+            "family": best.family.value,
+            "direction": str(best.direction),
+            "entry": best.signal.entry,
+            "stop": best.signal.stop,
+            "likelihood_score": round(best.likelihood, 3),
+            "likelihood_is_a_probability": False,
+            "out_of_sample_trades": best.score.trades,
+            "raw_mean_r": round(best.score.mean_r, 4),
+            "shrunk_r": round(best.score.shrunk_r, 4),
+            "deflated_r": round(best.score.deflated_r, 4),
+            "strategies_with_usable_records": len(usable),
+            "concordant_strategies": len(best.concordant),
+            "concordant_families": len(best.concordant_families),
+        })
+
+        # The selection penalty. Reported as a fact rather than left implicit,
+        # because "best of 49" and "good" are not the same claim and the number
+        # in front of someone is the one they will quote.
+        if len(usable) > 1:
+            warnings.append(
+                f"This is the best of {len(usable)} strategies with usable "
+                f"records. Selecting a maximum out of {len(usable)} candidates "
+                f"inflates it; deflated_r ({best.score.deflated_r:+.3f}R) is the "
+                f"number that already accounts for that, and raw_mean_r "
+                f"({best.score.mean_r:+.3f}R) is the one that does not."
+            )
+
+        if best.score.deflated_r <= 0:
+            warnings.append(
+                f"After the multiple-testing penalty the selected strategy's edge "
+                f"is {best.score.deflated_r:+.3f}R — at or below zero. It ranks "
+                f"first among what was tested and is not evidence of an edge."
+            )
+
+        if best.score.trades < 30:
+            warnings.append(
+                f"Selected on {best.score.trades} out-of-sample trades. Below "
+                f"about 30 the ordering is mostly noise, so which strategy came "
+                f"first is close to arbitrary."
+            )
+
+        if len(best.concordant) > 1 and len(best.concordant_families) == 1:
+            warnings.append(
+                f"{len(best.concordant)} strategies agree but all from the "
+                f"{best.concordant_families[0]} family — that is one opinion "
+                f"measured {len(best.concordant)} times, not confirmation."
+            )
+
+        if best.likelihood >= 0.99 and len(ranking.signals) <= 2:
+            warnings.append(
+                f"A likelihood of {best.likelihood:.2f} with only "
+                f"{len(ranking.signals)} live signal(s) is an artefact of the "
+                f"scale: the top of a two-item ranking scores 1.0 whatever the "
+                f"evidence behind it."
+            )
+
+        return facts, warnings
+
+    def prompt_for(self, facts: dict[str, Any], **inputs: Any) -> str:
+        return (
+            "A ranking engine selected one strategy out of many. Explain what "
+            "that selection does and does not establish. Use ONLY these values.\n\n"
+            "Be explicit that the likelihood score is a relative ordering and "
+            "not a probability, and that selecting the best of many records is "
+            "itself a search that inflates the winner. State whether the "
+            "deflated figure still supports acting.\n\n"
+            + _render_facts(facts)
+        )
 
 
 class ResearchAgent(Agent):
@@ -276,6 +407,10 @@ class PipelineResult:
     reports: list[AgentReport] = field(default_factory=list)
     approval_required: bool = True
     approval_summary: str = ""
+    #: Present only from :meth:`AgentPipeline.run_ensemble`. The full scoreboard
+    #: behind the selection, so the strategies that lost stay visible — a
+    #: ranking that only ever shows its winner cannot be audited.
+    ranking: Any = None
 
     def by_role(self, role: AgentRole) -> AgentReport | None:
         return next((r for r in self.reports if r.role is role), None)
@@ -289,7 +424,11 @@ class PipelineResult:
         gate = (
             "\n\n"
             + "═" * 56
-            + "\nHUMAN APPROVAL REQUIRED — this pipeline cannot place an order.\n"
+            + (
+                "\nNOTHING TO APPROVE — no strategy was selected.\n"
+                if not self.approval_required
+                else "\nHUMAN APPROVAL REQUIRED — this pipeline cannot place an order.\n"
+            )
             + self.approval_summary
         )
         return body + gate
@@ -300,10 +439,15 @@ class AgentPipeline:
 
     There is deliberately no ``execute`` stage. The pipeline terminates in an
     approval request that a human acts on.
+
+    :meth:`run` reasons about a strategy you name. :meth:`run_ensemble` picks
+    one out of the archive first, by walk-forward evidence, and then reasons
+    about that — prefixing the same five stages with a Selection report.
     """
 
     def __init__(self, settings: AgentSettings | None = None) -> None:
         self.settings = settings or AgentSettings()
+        self.selection = SelectionAgent(self.settings)
         self.research = ResearchAgent(self.settings)
         self.debate = DebateAgent(self.settings)
         self.backtest = BacktestAgent(self.settings)
@@ -349,6 +493,92 @@ class AgentPipeline:
                 signal, backtest_result, provenance
             ),
         )
+
+    def run_ensemble(
+        self,
+        series: OHLCVSeries,
+        *,
+        risk_settings: RiskSettings | None = None,
+        warmup: int = 100,
+        folds: int = 4,
+        entries: dict[str, Any] | None = None,
+        top: int = 10,
+    ) -> PipelineResult:
+        """Rank the archive by out-of-sample evidence, then reason about the winner.
+
+        The ordering matters and is not cosmetic. Selection happens **first and
+        from measured records only** — walk-forward folds, shrunk by sample
+        size, then deflated for the number of strategies tested. No agent, and
+        no language model, gets to influence which strategy is chosen. The
+        agents interpret a decision that arithmetic already made.
+
+        Doing it the other way round — letting a model read the archive and
+        nominate a strategy — would produce more fluent reasoning and a worse
+        answer, because the failure mode of a model choosing among 49 records is
+        to find a story for whichever one won, and a story is indistinguishable
+        from an edge until money is on it.
+
+        When the ranking refuses, so does this. There is no fallback to a
+        default strategy: running the pipeline on an arbitrary strategy after
+        the evidence declined to name one would produce a full five-stage report
+        about nothing, which is worse than an empty one because it looks
+        complete.
+        """
+        from axiom.research.ensemble import SignalEnsemble
+
+        settings = risk_settings or RiskSettings()
+        ensemble = SignalEnsemble(
+            entries=entries, folds=folds, warmup=warmup, risk_settings=settings
+        )
+        ranking = ensemble.rank(series, top=top)
+
+        common = {
+            "series": series,
+            "state": ICTEngine().analyse(series),
+            "provenance": series.provenance,
+        }
+        selection_report = self.selection.run(ranking=ranking, **common)
+
+        best = ranking.best
+        if best is None:
+            return PipelineResult(
+                reports=[selection_report],
+                approval_required=False,
+                approval_summary=self._no_selection_summary(ranking, series.provenance),
+                ranking=ranking,
+            )
+
+        strategy = ensemble.entries[best.strategy_key].build()
+        result = self.run(
+            series, strategy, risk_settings=settings, warmup=warmup
+        )
+        return PipelineResult(
+            reports=[selection_report, *result.reports],
+            approval_required=True,
+            approval_summary=(
+                f"  Selected: {best.strategy_key} [{best.family.value}] out of "
+                f"{len(ranking.scores)} strategies, on {best.score.trades} "
+                f"out-of-sample trades ({best.score.deflated_r:+.3f}R deflated).\n"
+                f"{result.approval_summary}"
+            ),
+            ranking=ranking,
+        )
+
+    @staticmethod
+    def _no_selection_summary(ranking: Any, provenance: Provenance) -> str:
+        lines = []
+        if not provenance.is_evidential:
+            lines.append(
+                f"  Data is {provenance.kind.value.upper()}. Do not act on this."
+            )
+        lines.append(
+            f"  No candidate. {ranking.refusal or 'No strategy has a live setup.'}"
+        )
+        lines.append(
+            "  Nothing to approve — which is the correct output when the "
+            "evidence does not name a strategy."
+        )
+        return "\n".join(lines)
 
     @staticmethod
     def _approval_summary(

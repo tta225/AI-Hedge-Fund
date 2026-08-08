@@ -513,7 +513,8 @@ class SignalEnsemble:
         positive = [s for s in usable.values() if s.deflated_r > 0]
         notes = [
             f"{len(usable)} strategies scored out-of-sample; "
-            f"{len(positive)} have a positive deflated edge.",
+            f"{len(positive)} {'has' if len(positive) == 1 else 'have'} a "
+            f"positive deflated edge.",
             "`likelihood` is a relative ordering score, not a probability.",
         ]
         if not positive:

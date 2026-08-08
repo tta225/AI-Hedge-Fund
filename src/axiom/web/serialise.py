@@ -338,7 +338,7 @@ def agent_payload(result: object) -> dict[str, Any]:
                 "produced_at": report.produced_at.isoformat(),
             }
         )
-    return {
+    payload: dict[str, Any] = {
         "reports": reports,
         "approval_required": result.approval_required,  # type: ignore[attr-defined]
         "approval_summary": result.approval_summary,  # type: ignore[attr-defined]
@@ -347,6 +347,35 @@ def agent_payload(result: object) -> dict[str, Any]:
         # cannot imply one exists.
         "can_execute": False,
     }
+
+    # The strategies that lost, when one was selected out of many. A ranking
+    # that only ever ships its winner cannot be audited: the gap between first
+    # place and tenth is the clearest evidence of whether the ordering means
+    # anything, and it is invisible from the winner alone.
+    ranking = getattr(result, "ranking", None)
+    if ranking is not None:
+        payload["ranking"] = {
+            "folds": ranking.folds,
+            "refusal": ranking.refusal,
+            "notes": list(ranking.notes),
+            "scoreboard": [
+                {
+                    "key": score.key,
+                    "family": score.family.value,
+                    "trades": score.trades,
+                    "raw_mean_r": _jsonable(score.mean_r),
+                    "shrunk_r": _jsonable(score.shrunk_r),
+                    "deflated_r": _jsonable(score.deflated_r),
+                    "win_rate": _jsonable(score.win_rate),
+                    "excluded": score.excluded,
+                }
+                for score in sorted(
+                    ranking.scores.values(),
+                    key=lambda s: -s.deflated_r if s.is_usable else 1e9,
+                )
+            ],
+        }
+    return payload
 
 
 def _jsonable(value: Any) -> Any:

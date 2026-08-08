@@ -982,7 +982,10 @@ function renderBroker(payload) {
 
   const account = payload.account || {};
   $('#broker-stats').replaceChildren(
-    statTile('Venue', payload.venue || '—', { sub: payload.available ? 'connected' : 'no credentials' }),
+    // 'unavailable' rather than 'no credentials' — NinjaTrader is unavailable
+    // on a Mac for a reason that has nothing to do with keys, and naming the
+    // wrong cause sends someone off checking credentials that are fine.
+    statTile('Venue', payload.venue || '—', { sub: payload.available ? 'connected' : 'unavailable — see below' }),
     statTile('Equity', fmt.money(parseFloat(account.equity))),
     statTile('Buying power', fmt.money(parseFloat(account.buying_power))),
     statTile('Cash', fmt.money(parseFloat(account.cash))),
@@ -1005,20 +1008,28 @@ function renderBroker(payload) {
     p.symbol,
     { text: fmt.num(p.quantity, 2), cls: p.quantity >= 0 ? 'up' : 'down' },
     fmt.price(p.average_price),
-    fmt.money(p.market_value),
-    { text: fmt.money(p.unrealised_pnl), cls: p.unrealised_pnl >= 0 ? 'up' : 'down' },
+    // Futures venues report size and price but not a marked value. An em dash
+    // says "not reported"; a $0.00 would say "worthless", which is a different
+    // and much worse claim.
+    p.market_value == null ? '—' : fmt.money(p.market_value),
+    p.unrealised_pnl == null
+      ? '—'
+      : { text: fmt.money(p.unrealised_pnl), cls: p.unrealised_pnl >= 0 ? 'up' : 'down' },
   ]);
   $('#broker-positions').replaceChildren(
     table(['Symbol', 'Qty', 'Avg price', 'Market value', 'Unrealised'], rows,
-      payload.available ? 'No open positions at the broker.' : 'No broker credentials configured.')
+      payload.available ? 'No open positions at the broker.' : (payload.status || 'Venue unavailable.'))
   );
 
   if (payload.error) toast(payload.error);
 }
 
 async function loadBroker(reconcile = false) {
+  const venue = $('#broker-venue')?.value || 'alpaca';
+  const params = new URLSearchParams({ venue_name: venue });
+  if (reconcile) params.set('reconcile', 'true');
   try {
-    renderBroker(await api('/api/broker' + (reconcile ? '?reconcile=true' : '')));
+    renderBroker(await api('/api/broker?' + params));
   } catch (err) {
     toast(err.message);
   }
@@ -1087,6 +1098,9 @@ async function boot() {
   $('#run-agents').addEventListener('click', runAgents);
   $('#refresh-broker').addEventListener('click', () => loadBroker(false));
   $('#run-reconcile').addEventListener('click', () => loadBroker(true));
+  // Switching venue reloads without reconciling: a reconciliation carried over
+  // from the previous venue would be read as belonging to the new one.
+  $('#broker-venue').addEventListener('change', () => loadBroker(false));
   $('#symbol').addEventListener('keydown', (e) => { if (e.key === 'Enter') runAnalyse(); });
 
   $$('#legend input').forEach((box) => {

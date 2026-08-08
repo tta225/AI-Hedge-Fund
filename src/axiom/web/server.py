@@ -350,17 +350,43 @@ def rank(query: RankQuery) -> dict[str, Any]:
     }
 
 
+def _console_venue(name: str) -> Any:
+    """Build a venue for the console. **Read-only forms only.**
+
+    Deliberately narrower than the CLI's `_build_venue`, which takes a `--live`
+    flag. The console has no confirmation step worth the name — a browser tab
+    left open is not a deliberate act — so it never constructs a venue in its
+    real-money form. Tradovate is built against the demo host; NinjaTrader is
+    built with `allow_live=True` because it has no other form, and is only ever
+    read from. The console has no order-placing endpoint at all, so the worst a
+    misread here produces is a wrong status line, not a wrong trade.
+    """
+    if name == "tradovate":
+        from axiom.execution.tradovate import DEMO_HOST, TradovateVenue
+
+        return TradovateVenue(host=DEMO_HOST, allow_live=False)
+    if name == "ninjatrader":
+        from axiom.core.credentials import get_credential
+        from axiom.execution.ninjatrader import NinjaTraderVenue
+
+        return NinjaTraderVenue(
+            account=get_credential("NINJATRADER_ACCOUNT") or "Sim101",
+            allow_live=True,
+        )
+    from axiom.execution.alpaca_paper import AlpacaPaperVenue
+
+    return AlpacaPaperVenue()
+
+
 @app.get("/api/broker")
-def broker(reconcile: bool = False) -> dict[str, Any]:
-    """Alpaca **paper** account status, and optionally a reconciliation.
+def broker(venue_name: str = "alpaca", reconcile: bool = False) -> dict[str, Any]:
+    """Broker account status, and optionally a reconciliation.
 
     Reports `is_live` explicitly. A console that shows broker state without
     saying whether it is real money is a console that will eventually be
     misread.
     """
-    from axiom.execution.alpaca_paper import AlpacaPaperVenue
-
-    venue = AlpacaPaperVenue()
+    venue = _console_venue(venue_name)
     payload: dict[str, Any] = {
         "venue": venue.name,
         "is_live": venue.is_live,
@@ -371,14 +397,17 @@ def broker(reconcile: bool = False) -> dict[str, Any]:
         return payload
 
     try:
-        payload["account"] = venue.account()
+        payload["account"] = venue.account() if hasattr(venue, "account") else {}
         payload["positions"] = [
             {
                 "symbol": p.symbol,
                 "quantity": p.quantity,
                 "average_price": p.average_price,
-                "market_value": p.market_value,
-                "unrealised_pnl": p.unrealised_pnl,
+                # Futures venues report size and price, not a marked value —
+                # reporting 0.0 would read as a worthless position rather than
+                # an unreported one, so the field is omitted instead.
+                "market_value": getattr(p, "market_value", None),
+                "unrealised_pnl": getattr(p, "unrealised_pnl", None),
             }
             for p in venue.positions().values()
         ]

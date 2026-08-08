@@ -311,6 +311,22 @@ few seconds. It does not load all 34 million.
 
 ---
 
+## Futures (ES, NQ, CL, GC)
+
+Futures are not in your Hugging Face bucket — it holds equities and ETFs only.
+Worth knowing, because asking it for `ES` **does** return data: it is
+**Eversource Energy**, a utility around $71, not the E-mini S&P. Nothing errors.
+The backtest runs. It is just measuring a utility stock.
+
+Getting real futures data and trading them has its own page:
+**[`docs/FUTURES_SETUP.md`](FUTURES_SETUP.md)**.
+
+Short version — if you are on a Mac, use **Tradovate**. It is free to demo, it
+gives you live futures quotes, and it works. NinjaTrader is Windows-only, so its
+adapter exists but cannot run on your machine.
+
+---
+
 ## Using the app without real data
 
 Everything still runs. Tick the **Generated bars** box and press **Analyse**.

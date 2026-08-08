@@ -170,7 +170,22 @@ no order type prevents it. That residual is reported, not hidden.
 
 * The **kill switch** is checked first in both the risk manager and the router, and cannot be overridden by any argument, mode, or strategy.
 * `OrderRouter` **refuses to be constructed** around a live venue unless the platform is in live mode with `AXIOM_LIVE_TRADING_CONFIRMED=I_UNDERSTAND_THE_RISK`.
+* Live-capable venues **refuse to be constructed** without a separate `allow_live=True`, so a config copied from elsewhere cannot arm real trading on its own. Two deliberate acts, not one.
+* `is_live` is **derived, never assumed**. Tradovate computes it from its host, because one class serves demo and live and a fixed flag would be wrong half the time. NinjaTrader hardcodes it `True`, because a Sim account and a funded one differ only by a string in a config file.
+* The **web console never constructs a venue in its real-money form** and has no order-placing endpoint. A browser tab left open is not a deliberate act.
 * The agent pipeline has **no execute stage**. It terminates in a human approval request.
+
+### Broker venues
+
+| Venue | Market | `is_live` | Notes |
+|---|---|---|---|
+| `alpaca-paper` | US equities | always `False` | paper only; structurally cannot reach a live account |
+| `tradovate` | CME futures | derived from host | demo and live; brackets travel with the entry as one OSO |
+| `ninjatrader` | CME futures | always `True` | Windows-only file bridge; see [`docs/FUTURES_SETUP.md`](docs/FUTURES_SETUP.md) |
+
+```bash
+python3 -m axiom.cli broker --venue tradovate --reconcile
+```
 
 ---
 

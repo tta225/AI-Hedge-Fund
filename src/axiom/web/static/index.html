@@ -189,15 +189,26 @@
 <!-- ══════════════════════════ BROKER ══════════════════════════ -->
 <div class="view" id="view-broker">
   <div class="callout callout-info">
-    <strong>Paper account.</strong> This venue reports <code>is_live = false</code>
-    and cannot move real money. <strong>Reconciliation is the part that matters</strong>:
-    the broker's book and this platform's book drift for ordinary reasons — a manual
-    trade, a corporate action, a fill missed during a restart — and the drift is silent.
+    <strong>Read-only.</strong> This console has no endpoint that places an order,
+    and it never builds a venue in its real-money form — Tradovate is reached on
+    its demo host here. Use the terminal (<code>axiom broker --live</code>) if you
+    mean to look at a funded account.
+    <strong>Reconciliation is the part that matters</strong>: the broker's book and
+    this platform's book drift for ordinary reasons — a manual trade, a corporate
+    action, a fill missed during a restart — and the drift is silent.
     A position the broker holds that the platform does not know about is unmanaged:
     nothing here will size against it, stop it out, or close it.
   </div>
 
   <section class="controls controls-sub">
+    <label class="field">
+      <span>Venue</span>
+      <select id="broker-venue">
+        <option value="alpaca">Alpaca — equities, paper</option>
+        <option value="tradovate">Tradovate — futures, demo</option>
+        <option value="ninjatrader">NinjaTrader — futures, Windows only</option>
+      </select>
+    </label>
     <button id="refresh-broker" class="btn btn-primary">Refresh</button>
     <button id="run-reconcile" class="btn btn-ghost">Reconcile</button>
     <span id="broker-live" class="pill pill-muted"></span>

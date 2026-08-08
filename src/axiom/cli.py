@@ -718,12 +718,20 @@ def portfolio_backtest(
 
 
 @app.command()
-def setup() -> None:
+def setup(
+    futures: bool = typer.Option(
+        False, "--futures", help="Also prompt for Tradovate and NinjaTrader."
+    ),
+) -> None:
     """Interactively save your API keys. Run this once.
 
     Prompts for each credential, writes them to a gitignored `.env` file with
     owner-only permissions, and verifies them immediately. Secrets are never
     echoed to the screen and never appear in shell history.
+
+    The futures credentials are behind a flag rather than in the default run.
+    Six extra prompts that almost everyone skips train people to press Enter
+    through the whole thing, and the ones that matter are in that stream too.
     """
     import stat
     from pathlib import Path
@@ -752,6 +760,14 @@ def setup() -> None:
         ("APCA_API_SECRET_KEY", "Alpaca Secret Key", "about 40 characters", True),
         ("HF_TOKEN", "Hugging Face token", "starts with hf_ — leave blank if your dataset is public", True),
     ]
+    if futures:
+        fields += [
+            ("TRADOVATE_USERNAME", "Tradovate username", "the email you log in with", False),
+            ("TRADOVATE_PASSWORD", "Tradovate password", "your login password", True),
+            ("TRADOVATE_CID", "Tradovate API key ID", "a number, from Application Settings → API Access", False),
+            ("TRADOVATE_SECRET", "Tradovate API secret", "issued alongside the key ID", True),
+            ("NINJATRADER_ACCOUNT", "NinjaTrader account name", "e.g. Sim101 — no spaces", False),
+        ]
 
     values = dict(existing)
     for name, label, hint, secret in fields:
@@ -768,7 +784,7 @@ def setup() -> None:
 
     lines = [
         "# AXIOM credentials. Gitignored — never commit this file.",
-        "# Regenerate with: python -m axiom.cli setup",
+        "# Regenerate with: python3 -m axiom.cli setup",
         "",
     ]
     lines += [f"{k}={v}" for k, v in values.items() if v]
@@ -858,18 +874,66 @@ def session_rates(
     console.print(measure_session_rates(series, horizon=horizon).render())
 
 
+def _build_venue(name: str, live: bool) -> Any:
+    """Construct a venue by name, with the live gate applied at construction.
+
+    `--live` is deliberately not a synonym for "use the live host". It is the
+    caller stating intent, and each venue decides separately whether that is
+    even meaningful: Alpaca's paper venue ignores it because it has no live
+    form, Tradovate swaps hosts, NinjaTrader has no non-live form at all. A
+    single flag that meant "go live" everywhere would be right for one of the
+    three.
+    """
+    if name == "alpaca":
+        from axiom.execution.alpaca_paper import AlpacaPaperVenue
+
+        return AlpacaPaperVenue()
+    if name == "tradovate":
+        from axiom.execution.tradovate import DEMO_HOST, LIVE_HOST, TradovateVenue
+
+        return TradovateVenue(
+            host=LIVE_HOST if live else DEMO_HOST, allow_live=live
+        )
+    if name == "ninjatrader":
+        from axiom.core.credentials import get_credential
+        from axiom.execution.ninjatrader import NinjaTraderVenue
+
+        # No demo form exists — the bridge is the same whether the account is
+        # Sim101 or funded — so the flag is required rather than defaulted.
+        return NinjaTraderVenue(
+            account=get_credential("NINJATRADER_ACCOUNT") or "Sim101",
+            allow_live=live,
+        )
+    raise typer.BadParameter(
+        f"unknown venue {name!r}. Choose from: alpaca, tradovate, ninjatrader"
+    )
+
+
 @app.command("broker")
 def broker(
+    venue_name: str = typer.Option(
+        "alpaca", "--venue", help="alpaca | tradovate | ninjatrader"
+    ),
+    live: bool = typer.Option(
+        False,
+        "--live",
+        help="Point at the real-money account. Refused by venues that have none.",
+    ),
     reconcile: bool = typer.Option(
         False, help="Compare the broker's positions against the platform book."
     ),
     orders: bool = typer.Option(False, help="List working orders at the broker."),
 ) -> None:
-    """Check the Alpaca **paper** account, and reconcile it against the book.
+    """Check a broker account, and reconcile it against the platform book.
 
-    Paper only. This venue reports `is_live = False`, so the router's live
-    refusal never has to fire — a live adapter would be a separate class and the
-    router already refuses those.
+    Three venues, and they are not equally safe. Alpaca is paper-only and
+    reports `is_live = False`, so the router's live refusal never has to fire
+    for it. Tradovate derives `is_live` from its host, so `--live` genuinely
+    changes where orders go. NinjaTrader is live unconditionally — a Sim
+    account and a funded one differ only by the name in a config file, so there
+    is nothing structural to key a safe default off.
+
+    Nothing here places an order. It reads state.
 
     Reconciliation is the part that matters. Internal and broker state drift for
     ordinary reasons — a manual trade, a corporate action, a fill missed during
@@ -877,10 +941,18 @@ def broker(
     platform does not know about is unmanaged: nothing will size against it,
     stop it out, or close it.
     """
-    from axiom.execution.alpaca_paper import AlpacaPaperVenue
+    try:
+        venue = _build_venue(venue_name, live)
+    except PermissionError as exc:
+        console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(code=1) from None
 
-    venue = AlpacaPaperVenue()
-    console.print(f"\n[bold cyan]{venue.name}[/bold cyan]  (is_live={venue.is_live})")
+    flag = (
+        "[bold red]is_live=True — REAL MONEY[/bold red]"
+        if venue.is_live
+        else "is_live=False"
+    )
+    console.print(f"\n[bold cyan]{venue.name}[/bold cyan]  ({flag})")
     console.print(f"  {venue.check()}\n")
 
     if not venue.is_available():

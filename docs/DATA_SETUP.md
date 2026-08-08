@@ -22,8 +22,8 @@ and nothing lands in your shell history.
 
 ```bash
 cd /home/user/AI-Hedge-Fund
-pip install -e .
-python -m axiom.cli setup
+python3 -m pip install -e .
+python3 -m axiom.cli setup
 ```
 
 **Use the absolute path.** On this machine `~` is `/root`, while the project
@@ -42,8 +42,8 @@ The code lives on a branch, not `main`, so the checkout line is not optional:
 git clone https://github.com/tta225/AI-Hedge-Fund.git
 cd AI-Hedge-Fund
 git checkout claude/ai-hedge-fund-platform-vxebwq
-pip install -e .
-python -m axiom.cli setup
+python3 -m pip install -e .
+python3 -m axiom.cli setup
 ```
 
 It asks for three things in turn:
@@ -66,8 +66,8 @@ existing value.
 ### Checking later
 
 ```bash
-python -m axiom.cli data-check
-python -m axiom.cli data-check --dataset Tta225/OHLCV-1m-bucket   # also verify a HF dataset
+python3 -m axiom.cli data-check
+python3 -m axiom.cli data-check --dataset Tta225/OHLCV-1m-bucket   # also verify a HF dataset
 ```
 
 `data-check` probes each source rather than just looking for keys. It reports
@@ -213,9 +213,9 @@ did not copy it, generate a new pair rather than hunting for it.
 ### Verify, then use
 
 ```bash
-python -m axiom.cli data-check
-python -m axiom.cli analyse --symbol SPY --timeframe 15m --days 60
-python -m axiom.cli backtest --strategy silver-bullet --symbol SPY --days 365
+python3 -m axiom.cli data-check
+python3 -m axiom.cli analyse --symbol SPY --timeframe 15m --days 60
+python3 -m axiom.cli backtest --strategy silver-bullet --symbol SPY --days 365
 ```
 
 ### The feed caveat that matters for ICT
@@ -310,7 +310,7 @@ HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxxxxxx
 ### Install the extra
 
 ```bash
-pip install -e ".[huggingface]"
+python3 -m pip install -e ".[huggingface]"
 ```
 
 ### Inspect before loading — always
@@ -392,7 +392,7 @@ about that API, not about the world.**
 ### Check a bucket
 
 ```bash
-python -m axiom.cli data-check --bucket Tta225/OHLCV-1m-bucket
+python3 -m axiom.cli data-check --bucket Tta225/OHLCV-1m-bucket
 ```
 
 ```

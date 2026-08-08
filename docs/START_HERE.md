@@ -31,28 +31,74 @@ cd AI-Hedge-Fund
 ```
 
 > **If `git clone` says the folder already exists**, you already downloaded it.
-> Just run `cd AI-Hedge-Fund` and then `git pull`.
+> Just run `cd AI-Hedge-Fund` and skip to Step 1b.
+
+---
+
+## Step 1b — switch to the working branch
+
+**Do not skip this.** A fresh clone lands you on `main`, and `main` does not yet
+have the browser console. Skipping it produces `No such command 'web'` at Step 3,
+which looks like a broken install and is not one — it is simply older code.
+
+```
+git fetch origin
+```
+
+```
+git checkout claude/data-check-m6exb3
+```
+
+```
+git pull
+```
+
+To check which one you are on at any time:
+
+```
+git branch --show-current
+```
+
+It should print `claude/data-check-m6exb3`. If it prints `main`, run the
+`git checkout` line again.
 
 ---
 
 ## Step 2 — install it
 
 ```
-pip install -e ".[web]"
+python3 -m pip install -e ".[web]"
 ```
 
 Wait for it. It prints a lot of text and ends with something like
 `Successfully installed axiom-0.1.0`.
 
-> **If it says `pip: command not found`**, try `pip3` instead of `pip` in that
-> command, and in every command below.
+> ### The `3` matters. Do not drop it.
+>
+> Every command on this page starts with **`python3`**, never `python`.
+>
+> On a Mac there is no command called `python` at all — Apple removed it. Typing
+> `python` gets you `command not found: python`, which reads like "Python is
+> missing" when Python is sitting right there under its real name. On Windows it
+> is the reverse: `python` works and `python3` may open the Microsoft Store
+> instead. If `python3` does that, use `python` for the rest of this page.
+>
+> Two more things worth knowing, because they cause the same confusion:
+>
+> * **`python3 -m pip` instead of plain `pip`.** Same reason — `pip` may not
+>   exist, and where it does it can belong to a *different* Python than the one
+>   you are about to run, so the install lands somewhere the app never looks.
+>   Writing it as `python3 -m pip` guarantees they are the same Python.
+> * **You may have several Pythons installed.** That is normal and not a problem
+>   as long as you use `python3` for both the install and the run, in the same
+>   terminal window.
 
 ---
 
 ## Step 3 — open the app
 
 ```
-python -m axiom.cli web
+python3 -m axiom.cli web
 ```
 
 You will see:
@@ -99,7 +145,7 @@ Click the **Data Sources** tab. Each source shows **OK** (green) or **FAIL** (re
 You can also check from the terminal. Stop the app first (`Ctrl` + `C`), then:
 
 ```
-python -m axiom.cli data-check
+python3 -m axiom.cli data-check
 ```
 
 ### Right now, on this project, all market data sources say FAIL
@@ -180,13 +226,13 @@ To add them:
 In the new session:
 
 ```
-python -m axiom.cli data-check --bucket Tta225/OHLCV-1m-bucket
+python3 -m axiom.cli data-check --bucket Tta225/OHLCV-1m-bucket
 ```
 
 That confirms the file *list*. To confirm the **bytes**, pull one small window:
 
 ```
-python -c "from axiom.data import HFBucketProvider; from axiom.core.types import get_instrument; from axiom.data.base import BarRequest; p=HFBucketProvider('Tta225/OHLCV-1m-bucket', prefix='data/'); print(p.fetch_bars(BarRequest.lookback(get_instrument('SPY'),'1m',5)).describe())"
+python3 -c "from axiom.data import HFBucketProvider; from axiom.core.types import get_instrument; from axiom.data.base import BarRequest; p=HFBucketProvider('Tta225/OHLCV-1m-bucket', prefix='data/'); print(p.fetch_bars(BarRequest.lookback(get_instrument('SPY'),'1m',5)).describe())"
 ```
 
 If that prints a line with a bar count, the bytes are flowing. If it fails and
@@ -231,7 +277,7 @@ What is actually in there:
 ### How the app reads it now
 
 ```
-python -m axiom.cli data-check --bucket Tta225/OHLCV-1m-bucket
+python3 -m axiom.cli data-check --bucket Tta225/OHLCV-1m-bucket
 ```
 
 Note `--bucket`, not `--dataset`.
@@ -281,32 +327,32 @@ Every one of these is run from inside the `AI-Hedge-Fund` folder.
 
 ```
 # Open the browser app
-python -m axiom.cli web
+python3 -m axiom.cli web
 ```
 
 ```
 # Check whether real data is reachable
-python -m axiom.cli data-check
+python3 -m axiom.cli data-check
 ```
 
 ```
 # Check a specific Hugging Face dataset
-python -m axiom.cli data-check --dataset your-name/your-dataset
+python3 -m axiom.cli data-check --dataset your-name/your-dataset
 ```
 
 ```
 # Save your API keys (asks you to paste them, hides them as you type)
-python -m axiom.cli setup
+python3 -m axiom.cli setup
 ```
 
 ```
 # The text version of the dashboard
-python -m axiom.cli terminal --synthetic
+python3 -m axiom.cli terminal --synthetic
 ```
 
 ```
 # Run a backtest in the terminal
-python -m axiom.cli backtest --strategy silver-bullet --symbol ES --days 120 --synthetic
+python3 -m axiom.cli backtest --strategy silver-bullet --symbol ES --days 120 --synthetic
 ```
 
 ---
@@ -315,10 +361,13 @@ python -m axiom.cli backtest --strategy silver-bullet --symbol ES --days 120 --s
 
 | What you see | What it means | What to do |
 |---|---|---|
-| `command not found: python` | Python is not installed | Install it from python.org, then start again at Step 2 |
-| `pip: command not found` | Same thing | Use `pip3` instead of `pip` |
+| `command not found: python` | You typed `python`. Macs do not have that command — only `python3` | Add the `3`: `python3 -m axiom.cli web` |
+| `command not found: python3` | Python really is missing | Install from [python.org/downloads](https://www.python.org/downloads/), **close the terminal, open a new one**, start again at Step 1 |
+| `pip: command not found` | Same cause | Use `python3 -m pip install …` instead of `pip install …` |
+| `No module named axiom` | The install went to a different Python than the one you ran | Re-run Step 2 in the same window, then Step 3 |
+| `No such command 'web'` | You are on `main`, which does not have the console yet | Do **Step 1b**, then Step 2, then Step 3 |
 | `No such file or directory` | You are in the wrong folder | Run `cd AI-Hedge-Fund` first |
-| `Address already in use` | The app is already running | Use `python -m axiom.cli web --port 8001` and visit http://127.0.0.1:8001 |
+| `Address already in use` | The app is already running | Use `python3 -m axiom.cli web --port 8001` and visit http://127.0.0.1:8001 |
 | `Tunnel connection failed: 403` | The network blocked it | See "How to fix it" above — this is not a key problem |
 | The browser page is blank | The app is not running | Check the terminal window is still open and shows no error |
 

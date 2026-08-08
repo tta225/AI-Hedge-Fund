@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -552,10 +553,14 @@ def web(
     try:
         from axiom.web.server import serve
     except ImportError:
+        # sys.executable, not a bare "pip": on macOS `pip` may not exist at all,
+        # and where it does it can belong to a different interpreter than the one
+        # running this command — installing into the wrong environment and
+        # leaving this same error in place. The absolute path cannot miss.
         console.print(
             "[bold red]The web extra is not installed.[/bold red]\n\n"
             "Run this, then try again:\n\n"
-            r"    pip install -e '.\[web]'"
+            f"    {sys.executable} -m pip install -e '.\\[web]'"
         )
         raise typer.Exit(code=1) from None
 

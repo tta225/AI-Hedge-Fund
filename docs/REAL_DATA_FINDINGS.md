@@ -67,7 +67,7 @@ reason that was caught rather than published.
 
 ## Results
 
-Run `python -m axiom.cli base-rates --data-root data/cache`.
+Run `python3 -m axiom.cli base-rates --data-root data/cache`.
 
 | Measurement | BTC 1h | ETH 1h | SOL 1h | BTC 15m |
 |---|---|---|---|---|

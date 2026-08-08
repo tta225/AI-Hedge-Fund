@@ -22,9 +22,15 @@ AXIOM is a systematic trading platform built around three ideas:
 **The browser console — the fastest way to see what this does:**
 
 ```bash
-python -m pip install -e ".[web]"
-python -m axiom.cli web            # then open http://127.0.0.1:8000
+git checkout claude/data-check-m6exb3   # the console is not on main yet
+python3 -m pip install -e ".[web]"
+python3 -m axiom.cli web                # then open http://127.0.0.1:8000
 ```
+
+`python3`, not `python` — macOS ships no `python` command at all, so dropping the
+`3` reports `command not found` for an interpreter that is installed. Likewise
+`python3 -m pip` rather than bare `pip`, which guarantees the install lands in
+the same interpreter that runs the app.
 
 Three tabs: a candlestick **Dashboard** with the ICT overlays drawn on it
 (gaps, order blocks, liquidity, structure, dealing range and OTE), a
@@ -36,39 +42,39 @@ behind an authenticating proxy before widening the bind address.
 **The command line:**
 
 ```bash
-python -m pip install -e ".[dev]"
+python3 -m pip install -e ".[dev]"
 
 # Save your API keys (prompts you; input is hidden). Optional — everything
 # below runs offline with --synthetic.
-python -m axiom.cli setup
+python3 -m axiom.cli setup
 
 # Full offline demonstration: terminal + ICT engine + backtest, no API keys.
-python -m axiom.cli demo
+python3 -m axiom.cli demo
 
 # Structural read of a symbol
-python -m axiom.cli analyse --symbol ES --timeframe 15m --synthetic
+python3 -m axiom.cli analyse --symbol ES --timeframe 15m --synthetic
 
 # The operator terminal
-python -m axiom.cli terminal --symbol ES --synthetic
+python3 -m axiom.cli terminal --symbol ES --synthetic
 
 # Backtest, costs always applied
-python -m axiom.cli backtest --strategy silver-bullet --synthetic --days 120
+python3 -m axiom.cli backtest --strategy silver-bullet --synthetic --days 120
 
 # Real bars, no credentials — Coinbase serves keyless public candles
-python -m axiom.cli cache-data
-python -m axiom.cli base-rates --data-root data/cache
+python3 -m axiom.cli cache-data
+python3 -m axiom.cli base-rates --data-root data/cache
 
 # The five-agent pipeline (Research → Debate → Backtest → Risk → Review)
-python -m axiom.cli pipeline --synthetic
+python3 -m axiom.cli pipeline --synthetic
 
 # Causal HMM regime detection
-python -m axiom.cli regime --synthetic --states 3
+python3 -m axiom.cli regime --synthetic --states 3
 
 # Sweep many strategies walk-forward, ranked by deflated Sharpe
-python -m axiom.cli research --synthetic --folds 4
+python3 -m axiom.cli research --synthetic --folds 4
 
 # Current safety posture
-python -m axiom.cli config
+python3 -m axiom.cli config
 ```
 
 `--synthetic` runs against the deterministic generator, so everything works with no
@@ -78,8 +84,8 @@ network and no credentials. Every output produced this way is stamped
 For real data:
 
 ```bash
-python -m pip install -e ".[yfinance]"
-python -m axiom.cli analyse --symbol SPY --timeframe 1d --days 365
+python3 -m pip install -e ".[yfinance]"
+python3 -m axiom.cli analyse --symbol SPY --timeframe 1d --days 365
 ```
 
 ---

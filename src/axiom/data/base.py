@@ -16,7 +16,7 @@ import pandas as pd
 
 from axiom.core.series import OHLCVSeries
 from axiom.core.timeframe import Timeframe
-from axiom.core.types import Instrument
+from axiom.core.types import AssetClass, Instrument
 
 
 class ProviderError(RuntimeError):
@@ -75,6 +75,10 @@ class MarketDataProvider(Protocol):
         """False when the adapter's dependency or credentials are missing."""
         ...
 
+    def supports(self, instrument: Instrument) -> bool:
+        """False when this provider cannot serve this kind of instrument."""
+        ...
+
     def fetch_bars(self, request: BarRequest) -> OHLCVSeries:
         """Return validated bars, or raise :class:`ProviderError`."""
         ...
@@ -85,8 +89,30 @@ class BaseProvider(ABC):
 
     name: str = "base"
 
+    #: Asset classes this provider can actually serve. Empty means "all", which
+    #: is right for a local CSV cache and wrong for every vendor.
+    asset_classes: frozenset[AssetClass] = frozenset()
+
     def is_available(self) -> bool:
         return True
+
+    def supports(self, instrument: Instrument) -> bool:
+        """Whether this provider can serve this instrument's asset class.
+
+        This exists because the alternative failure is silent. Ticker symbols
+        are not unique across asset classes: ``ES`` is the E-mini S&P on CME and
+        **Eversource Energy** on the NYSE; ``CL`` is crude oil and also
+        Colgate-Palmolive. An equity provider asked for ``ES`` does not error —
+        it returns a utility trading near $71, a backtest runs to completion,
+        and the result is a real number about the wrong instrument.
+
+        A registry that falls through to the next provider on *failure* cannot
+        catch that, because nothing failed. It has to be caught before the
+        request is made.
+        """
+        if not self.asset_classes:
+            return True
+        return instrument.asset_class in self.asset_classes
 
     @abstractmethod
     def _fetch_raw(self, request: BarRequest) -> pd.DataFrame:

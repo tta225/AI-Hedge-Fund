@@ -9,6 +9,7 @@ from axiom.data.base import (
     ProviderUnavailableError,
 )
 from axiom.data.coinbase import CoinbaseProvider
+from axiom.data.databento import DatabentoProvider
 from axiom.data.hf_bucket import HFBucketProvider
 from axiom.data.huggingface import HuggingFaceProvider
 from axiom.data.providers import CSVProvider, OpenBBProvider, YFinanceProvider
@@ -17,7 +18,7 @@ from axiom.data.synthetic import SyntheticProvider
 
 __all__ = [
     "AlpacaProvider", "BarRequest", "BaseProvider", "CSVProvider",
-    "CoinbaseProvider", "DataRegistry", "HFBucketProvider",
+    "CoinbaseProvider", "DataRegistry", "DatabentoProvider", "HFBucketProvider",
     "HuggingFaceProvider",
     "MarketDataProvider",
     "OpenBBProvider", "ProviderError", "ProviderUnavailableError", "SyntheticProvider",

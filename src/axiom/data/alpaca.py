@@ -60,6 +60,10 @@ class AlpacaProvider(BaseProvider):
     """
 
     name = "alpaca"
+    #: Equities and crypto. Notably **not** futures — asked for "ES" it
+    #: returns Eversource Energy, a real utility at a real price, and
+    #: nothing about the response says it is the wrong instrument.
+    asset_classes = frozenset({AssetClass.EQUITY, AssetClass.CRYPTO})
 
     def __init__(
         self,

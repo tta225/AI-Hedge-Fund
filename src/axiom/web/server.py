@@ -151,11 +151,17 @@ def status() -> dict[str, Any]:
     `docs/DATA_SETUP.md`.
     """
     from axiom.core.credentials import describe_credentials
-    from axiom.data import AlpacaProvider, CoinbaseProvider, HuggingFaceProvider
+    from axiom.data import (
+        AlpacaProvider,
+        CoinbaseProvider,
+        DatabentoProvider,
+        HuggingFaceProvider,
+    )
 
     probes = [
         ("alpaca", AlpacaProvider().check_credentials()),
         ("coinbase", CoinbaseProvider().check_reachable()),
+        ("databento", DatabentoProvider().check_credentials()),
         ("huggingface", HuggingFaceProvider("unused/unused").check_token()),
     ]
     sources = [

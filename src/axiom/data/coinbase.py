@@ -86,6 +86,7 @@ class CoinbaseProvider(BaseProvider):
     """
 
     name = "coinbase"
+    asset_classes = frozenset({AssetClass.CRYPTO})
 
     def __init__(
         self,

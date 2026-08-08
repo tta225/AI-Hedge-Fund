@@ -19,6 +19,7 @@ from pathlib import Path
 import pandas as pd
 
 from axiom.core.provenance import Provenance
+from axiom.core.types import AssetClass
 from axiom.data.base import BarRequest, BaseProvider, ProviderError, ProviderUnavailableError
 
 # yfinance interval strings, keyed by our timeframe label.
@@ -80,6 +81,10 @@ class YFinanceProvider(BaseProvider):
     """
 
     name = "yfinance"
+    #: Yahoo does carry futures, but under its own suffixed symbology
+    #: ("ES=F"). A bare "ES" resolves to Eversource Energy instead, so
+    #: futures are excluded rather than silently mis-resolved.
+    asset_classes = frozenset({AssetClass.EQUITY, AssetClass.INDEX, AssetClass.FX})
 
     def __init__(self, auto_adjust: bool = True) -> None:
         self.auto_adjust = auto_adjust

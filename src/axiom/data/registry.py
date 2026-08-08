@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from axiom.core.series import OHLCVSeries
 from axiom.core.timeframe import Timeframe
-from axiom.core.types import Instrument
+from axiom.core.types import AssetClass, Instrument
 from axiom.data.alpaca import AlpacaProvider
 from axiom.data.base import BarRequest, MarketDataProvider, ProviderError
 from axiom.data.coinbase import CoinbaseProvider
+from axiom.data.databento import DatabentoProvider
 from axiom.data.providers import CSVProvider, YFinanceProvider
 from axiom.data.synthetic import SyntheticProvider
 
@@ -36,11 +37,32 @@ class DataRegistry:
     def available(self) -> tuple[MarketDataProvider, ...]:
         return tuple(p for p in self._providers if p.is_available())
 
+    @staticmethod
+    def _supports(provider: MarketDataProvider, request: BarRequest) -> bool:
+        supports = getattr(provider, "supports", None)
+        return True if supports is None else bool(supports(request.instrument))
+
     def fetch_bars(self, request: BarRequest) -> OHLCVSeries:
+        """Try each provider in turn, skipping those that cannot serve the ask.
+
+        The asset-class check is not an optimisation. Fallback-on-failure only
+        protects against providers that *fail*, and the dangerous case here does
+        not fail: ticker symbols are not unique across asset classes, so an
+        equity provider asked for ``ES`` returns Eversource Energy — a real
+        utility at a real price — and the backtest runs to completion on the
+        wrong instrument. Nothing downstream can detect that, because there is
+        nothing wrong with the data. It is only wrong about what it is.
+        """
         if not self._providers:
             raise ProviderError("no data providers registered")
         failures: list[str] = []
         for provider in self._providers:
+            if not self._supports(provider, request):
+                failures.append(
+                    f"{provider.name}: does not carry "
+                    f"{request.instrument.asset_class.value}"
+                )
+                continue
             if not provider.is_available():
                 failures.append(f"{provider.name}: unavailable")
                 continue
@@ -48,9 +70,18 @@ class DataRegistry:
                 return provider.fetch_bars(request)
             except ProviderError as exc:
                 failures.append(f"{provider.name}: {exc}")
+
+        hint = ""
+        if request.instrument.asset_class is AssetClass.FUTURES:
+            hint = (
+                "\n\nNo registered provider carries futures. Databento does — "
+                'install it with `python3 -m pip install -e ".[databento]"` and '
+                "set DATABENTO_API_KEY. See docs/FUTURES_SETUP.md."
+            )
         raise ProviderError(
             f"all providers failed for {request.instrument.symbol} {request.timeframe}\n  - "
             + "\n  - ".join(failures)
+            + hint
         )
 
     def fetch(
@@ -66,14 +97,20 @@ class DataRegistry:
 def default_registry(data_root: str | None = None) -> DataRegistry:
     """Registry wired to the available free adapters, best first.
 
-    Order: local CSV (fastest, fully controlled) → Alpaca (real keyed market
-    data, skipped silently when unkeyed) → Coinbase (real, keyless, crypto
-    only) → yfinance (unofficial endpoint, last resort). Synthetic is
-    deliberately absent; see :class:`DataRegistry`.
+    Order: local CSV (fastest, fully controlled) → Databento (the only source
+    here that carries futures; skipped silently when unkeyed or uninstalled) →
+    Alpaca (real keyed market data) → Coinbase (real, keyless, crypto only) →
+    yfinance (unofficial endpoint, last resort). Synthetic is deliberately
+    absent; see :class:`DataRegistry`.
+
+    Databento sits above Alpaca rather than below because it is the only one
+    that can be right about a futures symbol, and each provider now declares
+    the asset classes it serves — so this order costs an equity request nothing.
     """
     registry = DataRegistry()
     if data_root:
         registry.register(CSVProvider(data_root))
+    registry.register(DatabentoProvider())
     registry.register(AlpacaProvider())
     registry.register(CoinbaseProvider())
     registry.register(YFinanceProvider())

@@ -24,6 +24,10 @@ yfinance = ["yfinance>=0.2.40"]
 # is only for users who want alpaca-py for other purposes.
 alpaca = ["alpaca-py>=0.21"]
 crypto = ["ccxt>=4.3"]
+# Futures data. Unlike the other adapters this one uses the vendor SDK rather
+# than raw REST: Databento's wire format is DBN, whose prices are fixed-point
+# int64 scaled by 1e-9, and decoding that correctly is the vendor's job.
+databento = ["databento>=0.34"]
 # Load your own training data from the Hugging Face Hub.
 huggingface = ["datasets>=2.20"]
 # AI agent layer (Research / Debate / Backtest / Risk / Review).

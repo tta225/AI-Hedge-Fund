@@ -442,7 +442,12 @@ def data_check(
     reports as a failure here rather than as a stack trace inside a backtest.
     """
     from axiom.core.credentials import describe_credentials, misnamed_credentials
-    from axiom.data import AlpacaProvider, CoinbaseProvider, HuggingFaceProvider
+    from axiom.data import (
+        AlpacaProvider,
+        CoinbaseProvider,
+        DatabentoProvider,
+        HuggingFaceProvider,
+    )
     from axiom.data.registry import default_registry
 
     console.print("\n[bold]Credentials[/bold]")
@@ -477,6 +482,10 @@ def data_check(
     report("Alpaca", AlpacaProvider().check_credentials())
     console.print()
     report("Coinbase", CoinbaseProvider().check_reachable())
+    console.print()
+    # The only source here that carries futures, so its absence is the reason
+    # an ES backtest has nothing real to run on.
+    report("Databento", DatabentoProvider().check_credentials())
     console.print()
 
     if bucket:

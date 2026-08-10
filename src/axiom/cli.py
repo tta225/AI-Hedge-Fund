@@ -185,32 +185,56 @@ def pipeline(
     synthetic: bool = typer.Option(False),
     seed: int = typer.Option(11),
     equity: float = typer.Option(250_000.0),
+    budget: float = typer.Option(5.0, help="Hard ceiling on model spend, USD."),
+    audit: str = typer.Option(
+        "data/audit/runs.jsonl", help="Append-only run log. Empty to disable."
+    ),
 ) -> None:
-    """Run the Research → Debate → Backtest → Risk → Review agent pipeline.
+    """Run the nine-seat agent desk over one instrument.
 
-    Terminates in a human approval request. It cannot place an order.
+    Regime, research, and backtest run first and concurrently; debate, red
+    team, execution, portfolio, risk, and review read their output. Terminates
+    in a human approval request, which the mandate may refuse to issue. It
+    cannot place an order under any configuration.
     """
     if strategy not in STRATEGIES:
         console.print(f"[red]Unknown strategy {strategy!r}.[/red]")
         raise typer.Exit(code=1)
 
+    from axiom.agents.audit import AuditLog
+    from axiom.agents.runtime import LLMBudget, LLMRuntime
+
     series = _load_series(symbol, timeframe, days, synthetic, seed)
     settings = get_settings()
-    if not settings.agents.enabled:
+    runtime = None
+    if settings.agents.enabled:
+        runtime = LLMRuntime(
+            model=settings.agents.agent_model,
+            api_key=settings.agents.anthropic_api_key,
+            budget=LLMBudget(max_cost_usd=budget),
+        )
+    else:
         console.print(
             "[yellow]No ANTHROPIC_API_KEY set — running in deterministic mode. "
             "All measured facts are still computed; only the narrative is "
             "omitted.[/yellow]\n"
         )
 
-    outcome = AgentPipeline(settings.agents).run(
+    outcome = AgentPipeline(
+        settings.agents,
+        runtime=runtime,
+        audit_log=AuditLog(audit) if audit else None,
+    ).run(
         series,
         STRATEGIES[strategy](),
         risk_settings=RiskSettings(
             account_equity=equity, max_gross_exposure_pct=2000.0
         ),
+        settings=settings,
     )
     console.print(outcome.render())
+    if outcome.record is not None and audit:
+        console.print(f"\n[dim]recorded as {outcome.record.short_digest} in {audit}[/dim]")
 
 
 @app.command()

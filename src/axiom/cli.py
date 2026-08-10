@@ -481,6 +481,7 @@ def data_check(
         CoinbaseProvider,
         DatabentoProvider,
         HuggingFaceProvider,
+        MassiveProvider,
     )
     from axiom.data.registry import default_registry
 
@@ -520,6 +521,8 @@ def data_check(
     # The only source here that carries futures, so its absence is the reason
     # an ES backtest has nothing real to run on.
     report("Databento", DatabentoProvider().check_credentials())
+    console.print()
+    report("Massive", MassiveProvider().check_credentials())
     console.print()
 
     if bucket:
@@ -763,7 +766,8 @@ def portfolio_backtest(
 @app.command()
 def setup(
     futures: bool = typer.Option(
-        False, "--futures", help="Also prompt for Tradovate and NinjaTrader."
+        False, "--futures",
+        help="Also prompt for futures brokers and data (Tradovate, NinjaTrader, Databento, Massive)."
     ),
 ) -> None:
     """Interactively save your API keys. Run this once.
@@ -773,7 +777,7 @@ def setup(
     echoed to the screen and never appear in shell history.
 
     The futures credentials are behind a flag rather than in the default run.
-    Six extra prompts that almost everyone skips train people to press Enter
+    Seven extra prompts that almost everyone skips train people to press Enter
     through the whole thing, and the ones that matter are in that stream too.
     """
     import stat
@@ -810,6 +814,8 @@ def setup(
             ("TRADOVATE_CID", "Tradovate API key ID", "a number, from Application Settings → API Access", False),
             ("TRADOVATE_SECRET", "Tradovate API secret", "issued alongside the key ID", True),
             ("NINJATRADER_ACCOUNT", "NinjaTrader account name", "e.g. Sim101 — no spaces", False),
+            ("DATABENTO_API_KEY", "Databento API key", "32 chars, starts with db-", True),
+            ("MASSIVE_API_KEY", "Massive API key", "from massive.com — a Polygon.io key works too", True),
         ]
 
     values = dict(existing)

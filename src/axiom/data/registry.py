@@ -9,6 +9,7 @@ from axiom.data.alpaca import AlpacaProvider
 from axiom.data.base import BarRequest, MarketDataProvider, ProviderError
 from axiom.data.coinbase import CoinbaseProvider
 from axiom.data.databento import DatabentoProvider
+from axiom.data.massive import MassiveProvider
 from axiom.data.providers import CSVProvider, YFinanceProvider
 from axiom.data.synthetic import SyntheticProvider
 
@@ -74,9 +75,10 @@ class DataRegistry:
         hint = ""
         if request.instrument.asset_class is AssetClass.FUTURES:
             hint = (
-                "\n\nNo registered provider carries futures. Databento does — "
-                'install it with `python3 -m pip install -e ".[databento]"` and '
-                "set DATABENTO_API_KEY. See docs/FUTURES_SETUP.md."
+                "\n\nNo registered provider carries futures. Two do: Databento "
+                '(`python3 -m pip install -e ".[databento]"`, DATABENTO_API_KEY) '
+                "and Massive (MASSIVE_API_KEY, no install needed). "
+                "See docs/FUTURES_SETUP.md."
             )
         raise ProviderError(
             f"all providers failed for {request.instrument.symbol} {request.timeframe}\n  - "
@@ -95,22 +97,29 @@ class DataRegistry:
 
 
 def default_registry(data_root: str | None = None) -> DataRegistry:
-    """Registry wired to the available free adapters, best first.
+    """Registry wired to the available adapters, best first.
 
-    Order: local CSV (fastest, fully controlled) → Databento (the only source
-    here that carries futures; skipped silently when unkeyed or uninstalled) →
-    Alpaca (real keyed market data) → Coinbase (real, keyless, crypto only) →
-    yfinance (unofficial endpoint, last resort). Synthetic is deliberately
-    absent; see :class:`DataRegistry`.
+    Order: local CSV (fastest, fully controlled) → Databento → Massive → Alpaca
+    → Coinbase (keyless, crypto only) → yfinance (unofficial endpoint, last
+    resort). Every one is skipped silently when unkeyed. Synthetic is
+    deliberately absent; see :class:`DataRegistry`.
 
-    Databento sits above Alpaca rather than below because it is the only one
-    that can be right about a futures symbol, and each provider now declares
-    the asset classes it serves — so this order costs an equity request nothing.
+    The two futures sources sit at the top because they are the only ones that
+    can be *right* about a futures symbol, and each provider now declares the
+    asset classes it serves — so an equity request skips straight past them at
+    no cost.
+
+    Databento outranks Massive for futures on one property: it has continuous
+    contract symbology with real roll rules, so a multi-year series is a series
+    rather than a splice. Massive addresses individual contracts, so this
+    adapter fetches a single front month and refuses to stitch. For a window
+    inside one contract they are equivalent; across a roll they are not.
     """
     registry = DataRegistry()
     if data_root:
         registry.register(CSVProvider(data_root))
     registry.register(DatabentoProvider())
+    registry.register(MassiveProvider())
     registry.register(AlpacaProvider())
     registry.register(CoinbaseProvider())
     registry.register(YFinanceProvider())

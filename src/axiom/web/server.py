@@ -163,12 +163,14 @@ def status() -> dict[str, Any]:
         CoinbaseProvider,
         DatabentoProvider,
         HuggingFaceProvider,
+        MassiveProvider,
     )
 
     probes = [
         ("alpaca", AlpacaProvider().check_credentials()),
         ("coinbase", CoinbaseProvider().check_reachable()),
         ("databento", DatabentoProvider().check_credentials()),
+        ("massive", MassiveProvider().check_credentials()),
         ("huggingface", HuggingFaceProvider("unused/unused").check_token()),
     ]
     sources = [

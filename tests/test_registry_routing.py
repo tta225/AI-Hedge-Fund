@@ -173,15 +173,31 @@ class TestFailureMessages:
 
 class TestDefaultRegistry:
     def test_no_default_provider_will_answer_a_futures_symbol_wrongly(self) -> None:
-        """The regression guard. If any provider in the default set starts
-        claiming futures without being able to serve them, this fails.
+        """The regression guard, stated as a property rather than a list.
+
+        What must never change is that the equity and crypto providers stay out
+        of futures — they are the ones that answer 'ES' with Eversource Energy.
+        Which providers *do* carry futures is expected to grow (Databento and
+        Massive today), so asserting an exact list would fail on every correct
+        addition and get updated reflexively, which is how the wrong provider
+        eventually slips back in.
         """
         registry = default_registry()
-        claimants = [
+        claimants = {
             p.name for p in registry.providers
             if getattr(p, "supports", lambda i: True)(ES)
-        ]
-        assert claimants == ["databento"]
+        }
+        assert claimants, "nothing carries futures — the routing hint is now a dead end"
+        assert not claimants & {"alpaca", "coinbase", "yfinance"}
+
+    def test_a_futures_claimant_can_actually_be_right_about_the_symbol(self) -> None:
+        """Claiming futures is a promise about symbology, not just coverage:
+        a bare root has to resolve to a contract somehow, or the claim routes
+        requests into a dead end."""
+        registry = default_registry()
+        for provider in registry.providers:
+            if getattr(provider, "supports", lambda i: True)(ES):
+                assert hasattr(provider, "resolve") or hasattr(provider, "symbol_for")
 
     def test_futures_routing_survives_databento_being_uninstalled(self) -> None:
         """The common case for this user today. It must produce the install

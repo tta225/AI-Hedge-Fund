@@ -13,7 +13,8 @@ the ledger to fixed-point is tracked as a known limitation, not an oversight.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum, IntEnum
 from typing import Self
@@ -268,18 +269,67 @@ INSTRUMENTS: dict[str, Instrument] = {
 _CRYPTO_QUOTES = ("USD", "USDT", "USDC", "EUR", "GBP")
 
 
+#: CME month codes, in calendar order: Jan→F, Feb→G, … Dec→Z.
+_MONTH_CODES = "FGHJKMNQUVXZ"
+
+#: A dated futures contract: root, month code, one or two year digits. ``ESH6``
+#: is March 2026 E-mini S&P; ``GCJ5`` is April 2025 Gold.
+_CONTRACT_PATTERN = re.compile(rf"^([A-Z]{{1,3}})([{_MONTH_CODES}])(\d{{1,2}})$")
+
+
+def parse_contract(symbol: str) -> tuple[str, str, str] | None:
+    """Split a dated futures ticker into ``(root, month_code, year)``.
+
+    Returns None for anything that is not shaped like a contract. US equity
+    tickers are alphabetic, so the trailing digit does most of the work here;
+    the month code carries the rest.
+    """
+    match = _CONTRACT_PATTERN.match(symbol.upper())
+    return match.groups() if match else None  # type: ignore[return-value]
+
+
 def get_instrument(symbol: str) -> Instrument:
     """Look up a built-in instrument, falling back to a generic spec.
 
-    An unknown ``BASE-QUOTE`` symbol is treated as crypto. Getting the asset
-    class wrong is not cosmetic: it decides which providers will serve the
-    symbol and which session calendar applies to it.
+    An unknown ``BASE-QUOTE`` symbol is treated as crypto, and a symbol shaped
+    like a dated futures contract is treated as a future.
+
+    Getting the asset class wrong is not cosmetic, and the futures case is the
+    expensive one. ``ESH6`` classified as an equity picks up the equity default
+    of ``point_value=1.0``, but an E-mini point is **$50** — so a risk budget
+    computed against it would size the position fifty times too large, silently
+    and with no error anywhere. It also decides which providers are asked, and
+    an equity provider handed a contract ticker returns either nothing or the
+    wrong instrument.
+
+    So a recognised contract inherits its **root's** specification — tick size,
+    point value, exchange, session timezone — rather than a generic one.
+    ``ESH6`` sizes exactly as ``ES`` does, which is the point: the March
+    contract and the June contract are the same instrument on different dates.
     """
     key = symbol.upper()
     if key in INSTRUMENTS:
         return INSTRUMENTS[key]
+
     base, sep, quote = key.partition("-")
     if sep and base and quote in _CRYPTO_QUOTES:
         return Instrument(key, AssetClass.CRYPTO, tick_size=0.01, point_value=1.0,
                           session_tz="UTC")
+
+    contract = parse_contract(key)
+    if contract is not None:
+        root, month, year = contract
+        parent = INSTRUMENTS.get(root)
+        if parent is not None and parent.asset_class is AssetClass.FUTURES:
+            return replace(
+                parent,
+                symbol=key,
+                description=f"{parent.description} ({month}{year} contract)",
+            )
+        # An unknown root is still recognisably a future. Generic specs are a
+        # guess, but 'futures with the wrong point value' at least routes to a
+        # provider that carries futures, where 'equity' does not.
+        return Instrument(key, AssetClass.FUTURES, tick_size=0.01, point_value=1.0,
+                          description=f"unrecognised futures contract ({root})")
+
     return Instrument(key, AssetClass.EQUITY, tick_size=0.01, point_value=1.0)

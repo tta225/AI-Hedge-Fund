@@ -10,8 +10,8 @@ Read the summary table, then only the section you need.
 |---|---|---|---|
 | Trade futures from this platform | **Tradovate** | free demo; funded account to trade | **yes** |
 | Trade through NinjaTrader | NinjaTrader ATI bridge | you already pay for it | **no — Windows only** |
-| Historical futures data for backtests | **Databento** | pay per GB | yes |
-| Live futures quotes | Tradovate or Databento | included / paid | yes |
+| Historical futures data for backtests | **Databento** or **Massive** | pay per GB / monthly plan | yes |
+| Live futures quotes | Tradovate, Databento or Massive | included / paid | yes |
 
 ---
 
@@ -236,13 +236,89 @@ live.databento.com
 
 ---
 
-## The other subscription you mentioned
+## Option D — Massive (formerly Polygon.io)
 
-You mentioned "massive" as a second data subscription. I could not identify it
-with confidence — the closest matches are unrelated products, and guessing wrong
-here means building an adapter against the wrong API.
+**Massive is Polygon.io.** The company rebranded in October 2025; same API, same
+keys, same endpoints. The host moved to `api.massive.com` and `api.polygon.io`
+still runs alongside it. If you already have a Polygon key, it works here — the
+adapter reads `POLYGON_API_KEY` as well as `MASSIVE_API_KEY`.
 
-Send me the URL and I will build it.
+### Getting a key
+
+1. Sign up at **https://massive.com**
+2. **Dashboard → API Keys**
+3. Copy the key
+
+```
+python3 -m axiom.cli setup --futures
+```
+
+Allow the host:
+
+```
+api.massive.com
+api.polygon.io
+```
+
+Check it:
+
+```
+python3 -m axiom.cli data-check
+```
+
+### Massive vs Databento
+
+Both give you futures. They differ in one way that matters for backtesting.
+
+| | Databento | Massive |
+|---|---|---|
+| Billing | per GB pulled, no minimum | monthly plan |
+| Equities | yes | yes |
+| Futures | yes | yes (separate plan) |
+| Options | yes | yes |
+| **Continuous contracts** | **yes, with roll rules** | **no** |
+
+**That last row is the important one.** A futures contract expires, so a
+multi-year chart is several contracts joined together. Databento does that
+joining for you and this platform reports every join. Massive addresses one
+contract at a time (`ESH6` is the March 2026 E-mini), so the adapter fetches a
+**single front-month contract** and tells you which one it used.
+
+It deliberately does **not** glue contracts together. The price jump where one
+contract ends and the next begins is not a gain or a loss — nothing happened to
+your position — and a data source that silently glued them would turn that jump
+into a fake return in every backtest that crossed it.
+
+**So:** for a backtest inside one contract's life (up to about three months),
+they are equivalent. For anything longer, use Databento.
+
+### What you can type
+
+The platform understands both forms:
+
+```
+python3 -m axiom.cli analyse --symbol ES --timeframe 15m
+```
+
+`ES` is the root — the adapter looks up the current front-month contract.
+
+```
+python3 -m axiom.cli analyse --symbol ESH6 --timeframe 15m
+```
+
+`ESH6` names one specific contract: **ES** + **H** (March) + **6** (2026).
+
+Month codes, because they are not obvious:
+
+| F | G | H | J | K | M | N | Q | U | V | X | Z |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| Jan | Feb | Mar | Apr | May | Jun | Jul | Aug | Sep | Oct | Nov | Dec |
+
+### One thing to watch
+
+The free tier is **5 requests per minute**. One backtest window can be several
+requests, so a long lookback will hit that limit and stop with an HTTP 429. The
+error says so explicitly rather than looking like a network fault.
 
 ---
 

@@ -36,7 +36,11 @@
      operator must never be unsure whether they are looking at real bars. -->
 <div id="provenance" class="provenance" hidden></div>
 
-<section class="controls" aria-label="Query controls">
+<!-- Scoped to the views that actually run a query. It used to render on every
+     tab, including Broker and Data Sources, where pressing Analyse silently did
+     nothing to the page in front of you — a control that is present but inert
+     is worse than one that is absent. -->
+<section class="controls" id="query-controls" aria-label="Query controls">
   <div class="field">
     <label for="symbol">Instrument</label>
     <input id="symbol" list="symbols" value="SPY" autocomplete="off" spellcheck="false" />
@@ -74,7 +78,7 @@
 
   <div class="panel panel-chart">
     <div class="panel-head">
-      <h2>Price &amp; Structure</h2>
+      <h2 id="chart-title">Price &amp; Structure</h2>
       <div class="legend" id="legend">
         <label class="lg lg-fvg"><input type="checkbox" data-layer="fvg" checked><span>Fair value gaps</span></label>
         <label class="lg lg-ob"><input type="checkbox" data-layer="ob" checked><span>Order blocks</span></label>
@@ -160,13 +164,9 @@
 
 <!-- ══════════════════════════ AGENTS ══════════════════════════ -->
 <div class="view" id="view-agents">
-  <div class="callout callout-info">
-    <strong>Research → Debate → Backtest → Risk → Review.</strong>
-    There is deliberately <strong>no execute stage</strong>. The pipeline ends in an
-    approval request a human acts on; it cannot place an order.
-    Each stage separates <em>facts</em> — measured by the engines — from
-    <em>narrative</em>, which is written by a language model. They are never merged,
-    so you can always tell which is which.
+  <div class="section-head">
+    <h1>Agent pipeline</h1>
+    <span class="dim">Research → Debate → Backtest → Risk → Review. No execute stage.</span>
   </div>
 
   <section class="controls controls-sub">
@@ -186,16 +186,32 @@
     <span id="agent-llm" class="pill pill-muted"></span>
   </section>
 
-  <div class="callout callout-warn" id="agent-ensemble-note" hidden>
-    <strong>Picking a strategy is itself a search.</strong> Every strategy in the
-    archive is scored across walk-forward folds and the best record wins — but the
-    best of 49 records is inflated by the act of choosing it, the same way the best
-    of 49 coin flips looks like skill. The <code>deflated_r</code> figure already
-    charges for that; <code>raw_mean_r</code> does not. The selection is made by
-    arithmetic before any agent sees it, and takes a minute or two to run.
-  </div>
+  <details class="note">
+    <summary>How to read this page</summary>
+    <div class="note-body">
+      <p>Each stage separates <strong>facts</strong> — measured by the engines — from
+      <strong>narrative</strong>, written by a language model. They are never merged,
+      so you can always tell which numbers were computed and which prose was written.</p>
+      <p>There is deliberately <strong>no execute stage</strong>. The pipeline ends in an
+      approval request a human acts on; it cannot place an order.</p>
+    </div>
+  </details>
+
+  <details class="note" id="agent-ensemble-note" hidden>
+    <summary>Picking a strategy is itself a search — what the numbers mean</summary>
+    <div class="note-body">
+      <p>Every strategy in the archive is scored across walk-forward folds and the best
+      record wins. But the best of 49 records is inflated <em>by the act of choosing it</em>,
+      the same way the best of 49 coin flips looks like skill.</p>
+      <p><code>deflated_r</code> already charges for that. <code>raw_mean_r</code> does not.
+      When they disagree sharply, the gap is the size of the illusion.</p>
+      <p>The selection is made by arithmetic before any agent sees it, and takes a minute
+      or two to run.</p>
+    </div>
+  </details>
 
   <div id="agent-gate" class="callout callout-warn" hidden></div>
+  <div id="agent-rail" class="stage-rail" hidden></div>
   <div id="agent-stages"></div>
 
   <div class="panel" id="agent-scoreboard-panel" hidden>
@@ -203,22 +219,15 @@
       <h2>Every strategy scored</h2>
       <span class="dim">The ones that lost, so the ranking can be audited</span>
     </div>
-    <div class="panel-body table-scroll" id="agent-scoreboard"></div>
+    <div class="panel-body table-scroll table-scroll-tall" id="agent-scoreboard"></div>
   </div>
 </div>
 
 <!-- ══════════════════════════ BROKER ══════════════════════════ -->
 <div class="view" id="view-broker">
-  <div class="callout callout-info">
-    <strong>Read-only.</strong> This console has no endpoint that places an order,
-    and it never builds a venue in its real-money form — Tradovate is reached on
-    its demo host here. Use the terminal (<code>axiom broker --live</code>) if you
-    mean to look at a funded account.
-    <strong>Reconciliation is the part that matters</strong>: the broker's book and
-    this platform's book drift for ordinary reasons — a manual trade, a corporate
-    action, a fill missed during a restart — and the drift is silent.
-    A position the broker holds that the platform does not know about is unmanaged:
-    nothing here will size against it, stop it out, or close it.
+  <div class="section-head">
+    <h1>Broker</h1>
+    <span class="dim">Read-only. This console has no endpoint that places an order.</span>
   </div>
 
   <section class="controls controls-sub">
@@ -239,19 +248,37 @@
   <div id="broker-recon"></div>
 
   <div class="panel">
-    <div class="panel-head"><h2>Positions at the broker</h2></div>
+    <div class="panel-head">
+      <h2>Positions at the broker</h2>
+      <span class="dim">Compared against the platform's own book by Reconcile</span>
+    </div>
     <div class="panel-body table-scroll" id="broker-positions"></div>
   </div>
+
+  <details class="note">
+    <summary>Why reconciliation is the part that matters</summary>
+    <div class="note-body">
+      <p>The broker's book and this platform's book drift for ordinary reasons — a
+      manual trade, a corporate action, a fill missed during a restart — and the
+      drift is <strong>silent</strong>.</p>
+      <p>A position the broker holds that the platform does not know about is
+      <strong>unmanaged</strong>: nothing here will size against it, stop it out, or
+      close it.</p>
+      <p>This console never builds a venue in its real-money form — Tradovate is
+      reached on its demo host. Use <code>axiom broker --live</code> in the terminal
+      if you mean to look at a funded account.</p>
+    </div>
+  </details>
 </div>
 
 <!-- ══════════════════════════ DATA SOURCES ══════════════════════════ -->
 <div class="view" id="view-data">
-  <div class="callout callout-info">
-    <strong>What this page is for.</strong> It tells you whether AXIOM can reach real
-    market data right now. <em>Credentialed</em> means a key is present.
-    <em>Reachable</em> means the network actually let us talk to the host. They are
-    different, and a source has to be both before any number here counts as evidence.
+  <div class="section-head">
+    <h1>Data sources</h1>
+    <span class="dim">Credentialed means a key is present. Reachable means the network let us through. A source needs both.</span>
   </div>
+
+  <div class="statrow" id="data-stats"></div>
 
   <div class="panel">
     <div class="panel-head">

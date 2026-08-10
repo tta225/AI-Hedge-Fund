@@ -89,6 +89,14 @@ function table(headers, rows, emptyMessage) {
         if (cell.tag) {
           const span = el('span', 'tag ' + (cell.cls || ''), cell.text);
           td.appendChild(span);
+        } else if (cell.bar) {
+          // The bar is absolutely positioned behind the value, so the number
+          // stays on the same baseline as every other cell in the column.
+          td.className = cell.cls || '';
+          const bar = el('div', 'bar ' + cell.bar.sign);
+          bar.style.width = cell.bar.width + '%';
+          td.appendChild(bar);
+          td.appendChild(el('span', null, cell.text));
         } else {
           td.textContent = cell.text;
           if (cell.cls) td.className = cell.cls;
@@ -104,12 +112,60 @@ function table(headers, rows, emptyMessage) {
   return t;
 }
 
+/**
+ * A stat tile.
+ *
+ * `opts.cls` colours the number (up/down/neutral); `opts.rail` colours the
+ * tile's leading edge. They are separate because sentiment and identity are
+ * different questions — a bias tile wants a coloured rail and a plain number,
+ * while a P&L tile wants the reverse. Colouring both makes every tile shout.
+ */
 function statTile(label, value, opts = {}) {
-  const tile = el('div', 'stat');
+  const rail = opts.rail || (opts.cls === 'up' ? 'is-up' : opts.cls === 'down' ? 'is-down' : '');
+  const tile = el('div', 'stat ' + rail);
   tile.appendChild(el('div', 'stat-label', label));
   tile.appendChild(el('div', 'stat-value ' + (opts.cls || ''), value));
   if (opts.sub) tile.appendChild(el('div', 'stat-sub', opts.sub));
   return tile;
+}
+
+/**
+ * A dense two-column fact grid.
+ *
+ * The agent stages carry twenty-odd measured values each. As a single column
+ * that is a scroll; as a grid it is a page you can scan. Long values are
+ * allowed to wrap rather than being truncated — a clipped number is worse than
+ * a tall row.
+ */
+function factGrid(entries, format = (v) => String(v)) {
+  const grid = el('div', 'kv-grid');
+  entries.forEach(([key, value]) => {
+    const text = format(value);
+    // A sizing rationale or a rejection reason runs to a sentence. Left in a
+    // narrow column it wraps to five lines and drags its neighbours out of
+    // alignment; given the full row it stays one or two.
+    const row = el('div', text.length > 48 ? 'is-wide' : '');
+    row.appendChild(el('span', 'k', key));
+    row.appendChild(el('span', 'v', text));
+    grid.appendChild(row);
+  });
+  return grid;
+}
+
+/**
+ * A table cell carrying a magnitude bar behind its value.
+ *
+ * A column of signed numbers gets read one value at a time. The same column
+ * with bars gets read as a distribution, which is the question a scoreboard is
+ * actually asked: not "what did this score" but "how far apart are these".
+ */
+function barCell(text, value, scale) {
+  const width = scale > 0 ? Math.min(100, (Math.abs(value) / scale) * 100) : 0;
+  return {
+    text,
+    cls: value > 0 ? 'up bar-cell' : 'down bar-cell',
+    bar: { width, sign: value >= 0 ? 'pos' : 'neg' },
+  };
 }
 
 // ───────────────────────────── network ─────────────────────────────
@@ -663,8 +719,12 @@ function query() {
   };
 }
 
+/** Set once a series loads, so switchView knows whether the banner has a subject. */
+let lastProvenance = null;
+
 function renderProvenance(provenance) {
   const node = $('#provenance');
+  lastProvenance = provenance;
   node.hidden = false;
   if (provenance.is_evidential) {
     node.className = 'provenance is-real';
@@ -688,22 +748,30 @@ function renderDashboard(payload) {
   const biasCls = ict.bias === 'bullish' ? 'up' : ict.bias === 'bearish' ? 'down' : 'neutral';
   const range = ict.dealing_range;
 
+  const hero = statTile(series.symbol + ' · ' + series.timeframe, fmt.price(last), {
+    cls: change >= 0 ? 'up' : 'down',
+    sub: `${fmt.signed(change)} (${fmt.signed(changePct)}%)`,
+  });
+  hero.classList.add('is-hero');
+
   $('#statrow').replaceChildren(
-    statTile(series.symbol + ' · ' + series.timeframe, fmt.price(last), {
-      cls: change >= 0 ? 'up' : 'down',
-      sub: `${fmt.signed(change)} (${fmt.signed(changePct)}%)`,
-    }),
+    hero,
+    // Bias and range position get coloured rails because they are directional
+    // claims. The counts below them do not: a rail on every tile is a rail on
+    // none, and 'Bars: 601' has no sentiment to report.
     statTile('Bias', ict.bias.toUpperCase(), { cls: biasCls, sub: ict.session || 'off session' }),
     statTile('Range position',
       range ? fmt.pct(range.position * 100) : '—',
       { cls: range ? (range.is_premium ? 'down' : 'up') : 'neutral',
         sub: range ? (range.is_premium ? 'PREMIUM' : 'DISCOUNT') : 'no dealing range' }),
     statTile('Active FVGs', String(ict.fair_value_gaps.filter((g) => g.is_active).length),
-      { sub: `${ict.counts.fair_value_gaps} total` }),
+      { rail: ' ', sub: `${ict.counts.fair_value_gaps} total` }),
     statTile('Active OBs', String(ict.order_blocks.filter((b) => b.is_active).length),
-      { sub: `${ict.counts.order_blocks} total` }),
-    statTile('Sweeps', String(ict.counts.sweeps), { sub: `${ict.counts.liquidity_pools} pools` }),
-    statTile('Bars', series.bars.toLocaleString(), { sub: `of ${series.total_bars.toLocaleString()}` }),
+      { rail: ' ', sub: `${ict.counts.order_blocks} total` }),
+    statTile('Sweeps', String(ict.counts.sweeps),
+      { rail: ' ', sub: `${ict.counts.liquidity_pools} pools` }),
+    statTile('Bars', series.bars.toLocaleString(),
+      { rail: ' ', sub: `of ${series.total_bars.toLocaleString()}` }),
   );
 
   $('#chart-foot').textContent = series.describe;
@@ -809,20 +877,51 @@ function renderBacktest(payload) {
   else { warn.hidden = true; }
 
   const ret = m.total_return_pct;
+  const overrun = m.worst_loss_vs_budget_x;
+  const equityHero = statTile('Ending equity', fmt.money(bt.ending_equity), {
+    cls: bt.ending_equity >= bt.starting_equity ? 'up' : 'down',
+    sub: `from ${fmt.money(bt.starting_equity)} · ${fmt.signed(ret)}%`,
+  });
+  equityHero.classList.add('is-hero');
+
   $('#bt-stats').replaceChildren(
-    statTile('Ending equity', fmt.money(bt.ending_equity), {
-      cls: bt.ending_equity >= bt.starting_equity ? 'up' : 'down',
-      sub: `from ${fmt.money(bt.starting_equity)}`,
+    equityHero,
+    statTile('Trades', fmt.num(m.trades, 0), {
+      // Below ~30 the win rate is noise, so the tile says so where the number
+      // is rather than leaving it to the caveats panel further down.
+      rail: m.trades < 30 ? 'is-warn' : ' ',
+      sub: m.trades < 30
+        ? `${fmt.pct(m.win_rate_pct)} win — sample too small`
+        : fmt.pct(m.win_rate_pct) + ' win rate',
     }),
-    statTile('Total return', fmt.unit(ret, '%'), { cls: ret >= 0 ? 'up' : 'down' }),
-    statTile('Trades', fmt.num(m.trades, 0), { sub: fmt.pct(m.win_rate_pct) + ' win rate' }),
-    statTile('Profit factor', fmt.num(m.profit_factor)),
-    statTile('Expectancy', fmt.money(m.expectancy), { sub: fmt.unit(m.avg_r, 'R avg') }),
-    statTile('Max drawdown', fmt.pct(m.max_drawdown_pct), { cls: 'down' }),
-    statTile('Sharpe', fmt.num(m.sharpe), { sub: 'Sortino ' + fmt.num(m.sortino) }),
-    statTile('Worst loss vs budget', fmt.unit(m.worst_loss_vs_budget, '×'), {
-      cls: m.worst_loss_vs_budget > 1 ? 'down' : 'up',
-      sub: 'per-trade risk budget',
+    statTile('Profit factor', fmt.num(m.profit_factor), {
+      rail: ' ', sub: 'gross win ÷ gross loss',
+    }),
+    statTile('Expectancy', fmt.money(m.expectancy), {
+      cls: m.expectancy >= 0 ? 'up' : 'down', sub: fmt.unit(m.avg_r, 'R avg'),
+    }),
+    statTile('Max drawdown', fmt.pct(m.max_drawdown_pct), {
+      cls: 'down',
+      // Return over drawdown is the comparison that decides whether a curve is
+      // worth its pain, and it was previously left for the reader to do.
+      sub: m.max_drawdown_pct > 0
+        ? `return ÷ dd = ${fmt.num(ret / m.max_drawdown_pct)}`
+        : 'no drawdown',
+    }),
+    statTile('Sharpe', fmt.num(m.sharpe), { rail: ' ', sub: 'Sortino ' + fmt.num(m.sortino) }),
+    // `worst_loss_vs_budget_x`, with the suffix. Reading the unsuffixed name
+    // meant this tile rendered '—' on every backtest ever run — and because
+    // `undefined > 1` is false it also painted that blank with the green
+    // "within budget" rail, asserting the risk budget held when nothing had
+    // been measured at all. A missing value must never read as a good one.
+    statTile('Worst loss vs budget', fmt.unit(overrun, '×'), {
+      cls: !isFinite(overrun) ? 'neutral' : overrun > 1 ? 'down' : 'up',
+      rail: !isFinite(overrun) ? ' ' : overrun > 1 ? 'is-down' : 'is-up',
+      sub: !isFinite(overrun)
+        ? 'not reported'
+        : overrun > 1
+          ? 'exceeded the per-trade budget'
+          : 'within the per-trade budget',
     }),
   );
 
@@ -832,15 +931,7 @@ function renderBacktest(payload) {
     ? `${fmt.date(curve.time[0])} → ${fmt.date(curve.time[curve.time.length - 1])}`
     : '';
 
-  const f = bt.funnel;
-  const dl = el('dl', 'kv');
-  const add = (k, v) => { dl.appendChild(el('dt', null, k)); dl.appendChild(el('dd', null, v)); };
-  add('signals generated', String(f.signals));
-  add('orders routed', String(f.orders));
-  add('trades completed', String(f.trades));
-  Object.entries(f.risk_rejections).forEach(([k, v]) => add('rejected · ' + k, String(v)));
-  Object.entries(f.rejections).forEach(([k, v]) => add('skipped · ' + k, String(v)));
-  $('#funnel-panel').replaceChildren(dl);
+  renderFunnel(bt.funnel);
 
   const notes = el('ul');
   notes.style.margin = '0';
@@ -885,6 +976,61 @@ async function runBacktest() {
   }
 }
 
+/**
+ * The signal funnel, drawn as a funnel.
+ *
+ * Three counts in a list answer "how many" and hide the question actually
+ * being asked, which is "where did they go". A strategy that produced 200
+ * signals and 4 trades is a different object from one that produced 4 signals
+ * and 4 trades, and as a list of numbers those two look nearly identical.
+ * Proportional bars make the attrition the first thing visible, and the
+ * rejection reasons underneath say what caused it.
+ */
+function renderFunnel(f) {
+  const host = $('#funnel-panel');
+  const stages = [
+    ['signals generated', f.signals, 'var(--accent)'],
+    ['orders routed', f.orders, 'var(--info)'],
+    ['trades completed', f.trades, 'var(--bull)'],
+  ];
+  // Scaled to the widest stage rather than to the first: orders can exceed
+  // signals when one signal produces an entry plus its protective legs, and
+  // scaling to signals would push those bars past the panel edge.
+  const peak = Math.max(...stages.map(([, v]) => v || 0), 1);
+
+  const wrap = el('div');
+  stages.forEach(([label, value, colour]) => {
+    const row = el('div', 'funnel-row');
+    const head = el('div', 'funnel-head');
+    head.appendChild(el('span', null, label));
+    head.appendChild(el('span', 'funnel-value', fmt.num(value || 0, 0)));
+    row.appendChild(head);
+
+    const track = el('div', 'funnel-track');
+    const fill = el('div', 'funnel-fill');
+    fill.style.width = ((value || 0) / peak) * 100 + '%';
+    fill.style.background = colour;
+    track.appendChild(fill);
+    row.appendChild(track);
+    wrap.appendChild(row);
+  });
+
+  const losses = [
+    ...Object.entries(f.risk_rejections || {}).map(([k, v]) => ['rejected · ' + k, v]),
+    ...Object.entries(f.rejections || {}).map(([k, v]) => ['skipped · ' + k, v]),
+  ];
+  if (losses.length) {
+    wrap.appendChild(el('div', 'block-label', 'where the rest went'));
+    const dl = el('dl', 'kv');
+    losses.forEach(([k, v]) => {
+      dl.appendChild(el('dt', null, k));
+      dl.appendChild(el('dd', null, String(v)));
+    });
+    wrap.appendChild(dl);
+  }
+  host.replaceChildren(wrap);
+}
+
 // ── agents
 
 function renderAgents(payload) {
@@ -908,49 +1054,87 @@ function renderAgents(payload) {
   );
 
   renderScoreboard(pipeline.ranking);
+  renderStageRail(pipeline.reports);
 
   const host = $('#agent-stages');
   host.replaceChildren(...pipeline.reports.map((report) => {
     const panel = el('div', 'panel');
     const head = el('div', 'panel-head');
     head.appendChild(el('h2', null, report.role));
-    head.appendChild(
+
+    const meta = el('div');
+    meta.style.cssText = 'display:flex;gap:8px;align-items:center';
+    const warnCount = (report.warnings || []).length;
+    if (warnCount) {
+      meta.appendChild(el('span', 'pill pill-warn',
+        `${warnCount} caveat${warnCount === 1 ? '' : 's'}`));
+    }
+    meta.appendChild(
       el('span', 'pill ' + (report.used_llm ? 'pill-ok' : 'pill-muted'),
          report.used_llm ? `narrative · ${report.model || 'llm'}` : 'facts only')
     );
+    head.appendChild(meta);
     panel.appendChild(head);
 
     const body = el('div', 'panel-body');
 
-    // Facts and narrative are kept visually distinct, not just structurally.
-    // Merging them is the one thing that would make the LLM unsafe here.
-    const facts = Object.entries(report.facts || {});
-    if (facts.length) {
-      body.appendChild(el('div', 'stat-label', 'measured facts'));
-      const dl = el('dl', 'kv');
-      facts.forEach(([k, v]) => {
-        dl.appendChild(el('dt', null, k));
-        dl.appendChild(el('dd', null, formatFact(v)));
-      });
-      body.appendChild(dl);
-    }
-
-    if (report.narrative) {
-      body.appendChild(el('div', 'stat-label', 'generated narrative'));
-      const prose = el('p', 'agent-narrative', report.narrative);
-      body.appendChild(prose);
-    }
-
-    if (report.warnings && report.warnings.length) {
-      body.appendChild(el('div', 'stat-label', 'warnings'));
+    // Warnings first, facts second. They used to sit at the bottom, under
+    // twenty rows of values — which put the caveat below the number it
+    // qualifies, exactly where nobody reads it.
+    if (warnCount) {
       const ul = el('ul', 'agent-warnings');
       report.warnings.forEach((w) => ul.appendChild(el('li', null, w)));
       body.appendChild(ul);
     }
 
+    // Facts and narrative are kept visually distinct, not just structurally.
+    // Merging them is the one thing that would make the LLM unsafe here.
+    const facts = Object.entries(report.facts || {});
+    if (facts.length) {
+      body.appendChild(el('div', 'block-label', 'measured facts'));
+      body.appendChild(factGrid(facts, formatFact));
+    }
+
+    if (report.narrative) {
+      body.appendChild(el('div', 'block-label', 'generated narrative'));
+      body.appendChild(el('p', 'agent-narrative', report.narrative));
+    }
+
     panel.appendChild(body);
     return panel;
   }));
+}
+
+/**
+ * The stage sequence as a single strip.
+ *
+ * Six stacked panels do not read as a pipeline — you have to scroll to learn
+ * there were six, and their order is only implied by position. The rail states
+ * the sequence in one line and marks which stages carry caveats, so the shape
+ * of the run is legible before any of it is read.
+ */
+function renderStageRail(reports) {
+  const rail = $('#agent-rail');
+  if (!reports || reports.length < 2) { rail.hidden = true; return; }
+  rail.hidden = false;
+
+  const nodes = [];
+  reports.forEach((report, i) => {
+    if (i) nodes.push(el('span', 'arrow', '→'));
+    const warned = (report.warnings || []).length > 0;
+    const cls = warned ? 'is-warn' : report.used_llm ? 'is-llm' : '';
+    const chip = el('button', 'stage-chip ' + cls, report.role);
+    chip.type = 'button';
+    chip.title = warned
+      ? `${report.warnings.length} caveat(s) — click to jump`
+      : 'click to jump';
+    chip.addEventListener('click', () => {
+      const panel = $('#agent-stages').children[i];
+      if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    nodes.push(chip);
+  });
+  rail.replaceChildren(...nodes);
 }
 
 function formatFact(value) {
@@ -974,6 +1158,16 @@ function renderScoreboard(ranking) {
   }
   panel.hidden = false;
 
+  // One scale across the column, so bar length is comparable between rows.
+  // Scaling each cell to itself would make every bar full-width and encode
+  // nothing at all.
+  const scale = Math.max(
+    ...ranking.scoreboard
+      .filter((s) => !s.excluded && isFinite(s.deflated_r))
+      .map((s) => Math.abs(s.deflated_r)),
+    1e-9
+  );
+
   const rows = ranking.scoreboard.map((s) => {
     if (s.excluded) {
       // Kept on the board rather than dropped. An excluded strategy that
@@ -984,11 +1178,11 @@ function renderScoreboard(ranking) {
     }
     return [
       s.key,
-      s.family,
+      { text: s.family, tag: true, cls: 'tag-info' },
       String(s.trades),
       // fmt.unit, not num + 'R': a missing value must render as '—', not '—R'.
       fmt.unit(s.raw_mean_r, 'R', 3),
-      { text: fmt.unit(s.deflated_r, 'R', 3), cls: s.deflated_r > 0 ? 'up' : 'down' },
+      barCell(fmt.unit(s.deflated_r, 'R', 3), s.deflated_r, scale),
       fmt.pct(s.win_rate * 100),
     ];
   });
@@ -1037,12 +1231,19 @@ function renderBroker(payload) {
     // 'unavailable' rather than 'no credentials' — NinjaTrader is unavailable
     // on a Mac for a reason that has nothing to do with keys, and naming the
     // wrong cause sends someone off checking credentials that are fine.
-    statTile('Venue', payload.venue || '—', { sub: payload.available ? 'connected' : 'unavailable — see below' }),
-    statTile('Equity', fmt.money(parseFloat(account.equity))),
-    statTile('Buying power', fmt.money(parseFloat(account.buying_power))),
-    statTile('Cash', fmt.money(parseFloat(account.cash))),
-    statTile('Positions', String((payload.positions || []).length)),
-    statTile('Status', account.status || '—'),
+    // The rail is the live/paper signal, repeated from the pill. Real money is
+    // the one fact on this page that must survive being glanced at.
+    statTile('Venue', payload.venue || '—', {
+      rail: payload.is_live ? 'is-down' : payload.available ? 'is-up' : 'is-warn',
+      sub: payload.available
+        ? (payload.is_live ? 'LIVE — real money' : 'connected · paper')
+        : 'unavailable — see below',
+    }),
+    statTile('Equity', fmt.money(parseFloat(account.equity)), { rail: ' ' }),
+    statTile('Buying power', fmt.money(parseFloat(account.buying_power)), { rail: ' ' }),
+    statTile('Cash', fmt.money(parseFloat(account.cash)), { rail: ' ' }),
+    statTile('Positions', String((payload.positions || []).length), { rail: ' ' }),
+    statTile('Status', account.status || '—', { rail: ' ' }),
   );
 
   const recon = $('#broker-recon');
@@ -1092,6 +1293,35 @@ async function loadBroker(reconcile = false) {
 async function loadStatus() {
   try {
     const s = await api('/api/status');
+
+    // A summary row above the detail. The question this page answers is "can I
+    // trust a number right now", and that is one count, not five paragraphs —
+    // which is what the list underneath it is.
+    const ok = s.sources.filter((x) => x.ok).length;
+    const futures = s.sources.filter(
+      (x) => x.ok && (x.name === 'databento' || x.name === 'massive')
+    ).length;
+    $('#data-stats').replaceChildren(
+      statTile('Sources reachable', `${ok} / ${s.sources.length}`, {
+        cls: ok ? 'up' : 'down',
+        sub: ok ? 'real data available' : 'nothing real is reachable',
+      }),
+      statTile('Futures data', futures ? 'YES' : 'NO', {
+        rail: futures ? 'is-up' : 'is-warn',
+        cls: futures ? 'up' : 'neutral',
+        sub: futures ? 'Databento or Massive' : 'needs Databento or Massive',
+      }),
+      statTile('Registry order', String(s.registry.order.length), {
+        rail: 'is-accent',
+        sub: 'providers, tried in order',
+      }),
+      statTile('Trading mode', s.settings.trading_mode.toUpperCase(), {
+        rail: s.settings.trading_mode === 'live' ? 'is-down' : '',
+        sub: s.settings.kill_switch ? 'kill switch ENGAGED' : 'kill switch clear',
+        cls: s.settings.kill_switch ? 'down' : 'neutral',
+      }),
+    );
+
     $('#sources-panel').replaceChildren(
       ...s.sources.map((src) => {
         const row = el('div', 'source');
@@ -1121,9 +1351,20 @@ async function loadStatus() {
 
 // ───────────────────────────── wiring ─────────────────────────────
 
+/** Views whose content is driven by the instrument/timeframe/lookback bar. */
+const QUERY_VIEWS = new Set(['dashboard', 'backtest', 'agents']);
+
 function switchView(name) {
   $$('.tab').forEach((t) => t.classList.toggle('is-active', t.dataset.view === name));
   $$('.view').forEach((v) => v.classList.toggle('is-active', v.id === 'view-' + name));
+
+  // Broker and Data Sources do not read the query bar, so showing it there
+  // offers a control that quietly does nothing.
+  $('#query-controls').hidden = !QUERY_VIEWS.has(name);
+  // Provenance describes the loaded series. On a view that shows no series it
+  // is a claim about something not on screen.
+  $('#provenance').hidden = !QUERY_VIEWS.has(name) || !lastProvenance;
+
   // Canvases sized while hidden measure zero, so redraw once visible.
   if (name === 'dashboard') chart.draw();
   if (name === 'backtest') equityChart.draw();

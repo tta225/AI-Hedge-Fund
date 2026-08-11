@@ -214,6 +214,63 @@ def pipeline(
 
 
 @app.command()
+def report(
+    strategy: str = typer.Option("silver-bullet", help=f"One of: {', '.join(STRATEGIES)}"),
+    symbol: str = typer.Option("ES"),
+    timeframe: str = typer.Option("15m"),
+    days: int = typer.Option(120),
+    synthetic: bool = typer.Option(False),
+    seed: int = typer.Option(11),
+    equity: float = typer.Option(250_000.0),
+    out: str = typer.Option("artifacts/report.html", help="HTML file to write."),
+    json_out: str = typer.Option("", "--json", help="Also write the raw payload here."),
+) -> None:
+    """Run the pipeline and write it to a self-contained HTML report.
+
+    The page is the same measured content the terminal renders, in a file that
+    outlives the session: no server, no assets, no network. Measured values are
+    set in monospace and model prose in the body face, so the facts/narrative
+    split survives into something a reader can share.
+    """
+    from axiom.report import build_payload, write_report
+
+    if strategy not in STRATEGIES:
+        console.print(f"[red]Unknown strategy {strategy!r}.[/red]")
+        raise typer.Exit(code=1)
+
+    series = _load_series(symbol, timeframe, days, synthetic, seed)
+    settings = get_settings()
+    risk_settings = RiskSettings(account_equity=equity, max_gross_exposure_pct=2000.0)
+
+    if not settings.agents.enabled:
+        console.print(
+            "[yellow]No ANTHROPIC_API_KEY set — the report will carry every "
+            "measured fact but no model narrative.[/yellow]"
+        )
+
+    outcome = AgentPipeline(settings.agents).run(
+        series, STRATEGIES[strategy](), risk_settings=risk_settings
+    )
+    payload = build_payload(
+        outcome,
+        series,
+        strategy_name=strategy,
+        risk=RiskManager(risk_settings, mode=settings.trading_mode,
+                         kill_switch=settings.kill_switch),
+    )
+    path = write_report(payload, out, json_out or None)
+
+    console.print(f"\n[green]✓[/green] report written to [bold]{path}[/bold]")
+    if json_out:
+        console.print(f"[green]✓[/green] payload written to [bold]{json_out}[/bold]")
+    if not series.provenance.is_evidential:
+        console.print(
+            "[yellow]The report is built on generated bars and says so on every "
+            "panel. Do not circulate it as performance.[/yellow]"
+        )
+
+
+@app.command()
 def demo() -> None:
     """Offline end-to-end demonstration on generated data."""
     console.print(

@@ -45,6 +45,9 @@ python -m axiom.cli base-rates --data-root data/cache
 # The five-agent pipeline (Research → Debate → Backtest → Risk → Review)
 python -m axiom.cli pipeline --synthetic
 
+# The same run as a self-contained HTML report you can open in a browser
+python -m axiom.cli report --synthetic --out artifacts/report.html
+
 # Causal HMM regime detection
 python -m axiom.cli regime --synthetic --states 3
 
@@ -85,6 +88,7 @@ axiom.portfolio   positions and P&L accounting
 axiom.backtest    event-driven backtester and performance metrics
 axiom.agents      Research → Debate → Backtest → Risk → Review pipeline
 axiom.terminal    the operator terminal
+axiom.report      one pipeline run as a self-contained HTML page
 ```
 
 Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design decisions and their rationale,
@@ -119,6 +123,12 @@ Provenance.synthetic("gen").derive("resample").derive("clean").is_evidential
 
 Any performance report built from non-evidential data renders a warning banner and answers
 `False` to `report.is_evidence`.
+
+The same rule survives into the HTML report: measured values are set in the monospaced
+face, model prose in the body face and labelled with the model that wrote it, and a run on
+generated bars opens with a banner that cannot be scrolled past. Metrics the sample cannot
+support — Sharpe under twenty daily observations, profit factor with no losing trade —
+render `n/a`, never `0.00`.
 
 ### 3. Searching many strategies does not manufacture an edge
 

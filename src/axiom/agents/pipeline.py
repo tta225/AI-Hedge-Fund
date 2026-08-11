@@ -276,6 +276,14 @@ class PipelineResult:
     reports: list[AgentReport] = field(default_factory=list)
     approval_required: bool = True
     approval_summary: str = ""
+    #: The evidence the reports were built from. Carried on the result so a
+    #: reader — or a renderer — can inspect the measured run itself rather
+    #: than re-deriving it, which would risk showing numbers from a second,
+    #: differently-seeded execution alongside the first one's narrative.
+    backtest: BacktestResult | None = None
+    ict_state: ICTState | None = None
+    #: The candidate the risk stage sized, if the strategy proposed one.
+    signal: Signal | None = None
 
     def by_role(self, role: AgentRole) -> AgentReport | None:
         return next((r for r in self.reports if r.role is role), None)
@@ -348,6 +356,9 @@ class AgentPipeline:
             approval_summary=self._approval_summary(
                 signal, backtest_result, provenance
             ),
+            backtest=backtest_result,
+            ict_state=state,
+            signal=signal,
         )
 
     @staticmethod

@@ -17,6 +17,7 @@ htmlcov/
 data/cache/
 data/raw/
 runs/
+artifacts/
 .DS_Store
 .idea/
 .vscode/

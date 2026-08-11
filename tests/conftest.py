@@ -61,6 +61,20 @@ def synthetic_series() -> OHLCVSeries:
     )
 
 
+@pytest.fixture(scope="module")
+def synthetic_series_module() -> OHLCVSeries:
+    """The same tape as :func:`synthetic_series`, built once per module.
+
+    Identical bars, module scope. A test that runs the full agent pipeline pays
+    for an ICT pass plus a backtest, and doing that per test function turns one
+    file into the slowest part of the suite.
+    """
+    end = datetime(2025, 6, 30, tzinfo=UTC)
+    return SyntheticProvider(seed=11, start_price=5200.0).fetch_bars(
+        BarRequest(ES, Timeframe.parse("15m"), end - timedelta(days=60), end)
+    )
+
+
 @pytest.fixture
 def uptrend_series() -> OHLCVSeries:
     """A clean uptrend: higher highs and higher lows, with a retracement.

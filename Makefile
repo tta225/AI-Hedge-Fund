@@ -1,4 +1,4 @@
-.PHONY: install dev test lint fmt type check demo terminal clean
+.PHONY: install dev test lint fmt type check demo terminal report clean
 
 install:
 	python -m pip install -e .
@@ -26,6 +26,9 @@ demo:
 
 terminal:
 	python -m axiom.cli terminal
+
+report:
+	python -m axiom.cli report --synthetic --out artifacts/report.html
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage build dist

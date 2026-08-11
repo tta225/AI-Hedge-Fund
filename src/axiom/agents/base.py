@@ -66,6 +66,10 @@ class AgentRole(str, Enum):
 
     RESEARCH = "research"
     REGIME = "regime"
+    #: Cross-sectional view from the quantitative alpha ensemble. Present only
+    #: when a universe panel was supplied — a single-instrument run has no
+    #: cross-section to read, and a seat with nothing to say should not sit.
+    ALPHA = "alpha"
     DEBATE = "debate"
     RED_TEAM = "red_team"
     BACKTEST = "backtest"

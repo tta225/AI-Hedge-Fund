@@ -37,6 +37,8 @@ from axiom.agents.governance import (
 )
 from axiom.agents.registry import AgentRegistry, default_registry
 from axiom.agents.runtime import LLMRuntime, Usage
+from axiom.alpha.ensemble import AlphaEnsemble, BlendedView, default_ensemble
+from axiom.alpha.panel import Panel
 from axiom.backtest.engine import Backtester, BacktestResult
 from axiom.core.config import AgentSettings, ExecutionSettings, RiskSettings, Settings
 from axiom.core.provenance import Provenance
@@ -275,6 +277,22 @@ class AgentPipeline:
         return self.registry.get(role)(self.settings, self.runtime)
 
     @staticmethod
+    def _blend_alpha(
+        panel: Panel | None, ensemble: AlphaEnsemble | None
+    ) -> list[BlendedView] | None:
+        """Run the cross-sectional roster at the panel's last bar.
+
+        Returns ``None`` — not an empty list — when no panel was supplied. The
+        distinction is load-bearing: an empty list means the roster looked and
+        found nothing, which is a finding; ``None`` means nobody looked, which
+        is not, and the alpha seat is left unseated for it.
+        """
+        if panel is None:
+            return None
+        roster = ensemble or default_ensemble()
+        return roster.run(panel, len(panel))
+
+    @staticmethod
     def _fit_regimes(series: OHLCVSeries) -> object | None:
         """Causal regime series, or ``None`` when the model will not fit.
 
@@ -292,7 +310,7 @@ class AgentPipeline:
         except Exception:
             return None
 
-    def build_graph(self) -> AgentGraph:
+    def build_graph(self, *, with_alpha: bool = False) -> AgentGraph:
         """The standing desk.
 
         The dependency edges are the argument structure, not just ordering:
@@ -315,6 +333,12 @@ class AgentPipeline:
             ),
             Stage(self._agent(role.RISK), depends_on=(role.PORTFOLIO,)),
         ]
+        if with_alpha:
+            # Seated only when there is a cross-section to read. A seat that
+            # reports "no data" on every run trains a reader to skip it, and
+            # the mandate's completeness rule would block every single-
+            # instrument run for the absence of a view nobody could form.
+            stages.append(Stage(self._agent(role.ALPHA)))
         return AgentGraph(stages, max_workers=self.max_workers)
 
     def run(
@@ -326,6 +350,8 @@ class AgentPipeline:
         execution_settings: ExecutionSettings | None = None,
         settings: Settings | None = None,
         warmup: int = 100,
+        panel: Panel | None = None,
+        ensemble: AlphaEnsemble | None = None,
         context: dict[str, str] | None = None,
     ) -> PipelineResult:
         risk_config = risk_settings or RiskSettings()
@@ -340,11 +366,12 @@ class AgentPipeline:
             series, warmup=warmup
         )
         regimes = self._fit_regimes(series)
+        views = self._blend_alpha(panel, ensemble)
         signal = backtest_result.signals[-1] if backtest_result.signals else None
         risk_manager = RiskManager(risk_config)
         portfolio = Portfolio(starting_cash=risk_config.account_equity)
 
-        graph = self.build_graph()
+        graph = self.build_graph(with_alpha=views is not None)
         reports = graph.run(
             {
                 "series": series,
@@ -352,6 +379,7 @@ class AgentPipeline:
                 "provenance": provenance,
                 "backtest": backtest_result,
                 "regimes": regimes,
+                "views": views,
                 "signal": signal,
                 "risk": risk_manager,
                 "risk_settings": risk_config,

@@ -64,7 +64,9 @@ class TestPipeline:
         rendered report and the audit digest.
         """
         result = self._run(synthetic_series)
-        assert {r.role for r in result.reports} == set(AgentRole)
+        # ALPHA is absent by design: no panel was supplied, so there is no
+        # cross-section to read and the seat is not seated.
+        assert {r.role for r in result.reports} == set(AgentRole) - {AgentRole.ALPHA}
         assert [r.role for r in result.reports] == [
             AgentRole.REGIME, AgentRole.RESEARCH, AgentRole.BACKTEST,
             AgentRole.PORTFOLIO, AgentRole.DEBATE, AgentRole.EXECUTION,

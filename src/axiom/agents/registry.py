@@ -18,6 +18,7 @@ from axiom.agents.roles import (
     DebateAgent,
     ExecutionAgent,
     PortfolioAgent,
+    QuantEnsembleAgent,
     RedTeamAgent,
     RegimeAgent,
     ResearchAgent,
@@ -74,6 +75,7 @@ def default_registry() -> AgentRegistry:
         BacktestAgent,
         ExecutionAgent,
         PortfolioAgent,
+        QuantEnsembleAgent,
         RiskAgent,
         ReviewAgent,
     ):

@@ -624,3 +624,93 @@ class ReviewAgent(Agent):
             "curve-fitted. No hype. If the data is not real, lead with that.\n\n"
             + render_facts(facts)
         )
+
+
+class QuantEnsembleAgent(Agent):
+    """Reads the cross-sectional alpha ensemble and reports what it found.
+
+    This is the seat where the uploaded architecture's model orchestration
+    meets the desk. It interprets :class:`~axiom.alpha.ensemble.BlendedView`
+    objects — consensus direction, measured confidence, and how much of the
+    roster agreed — and its warnings are mostly about *disagreement*, because a
+    blend of contradicting sources is the case where a single combined number
+    is most misleading and most tempting to act on.
+
+    It runs only when a panel was supplied. A single-instrument pipeline has no
+    cross-section, and a seat that reports "no data" on every run trains a
+    reader to skip it.
+    """
+
+    role = AgentRole.ALPHA
+    requires = ("views",)
+
+    def gather_facts(self, **inputs: Any) -> tuple[dict[str, Any], list[str]]:
+        views = list(inputs["views"])
+        symbol = inputs["series"].instrument.symbol if inputs.get("series") else ""
+
+        facts: dict[str, Any] = {
+            "universe_size": len(views),
+            "sources": ", ".join(sorted({c for v in views for c in v.contributors})) or "none",
+        }
+        warnings: list[str] = []
+
+        if not views:
+            facts["decision"] = "the ensemble produced no views"
+            warnings.append(
+                "No alpha source reported on any instrument. There is no "
+                "cross-sectional opinion here, not a neutral one."
+            )
+            return facts, warnings
+
+        convictions = [abs(v.conviction) for v in views]
+        facts["mean_confidence"] = round(
+            float(sum(v.confidence for v in views) / len(views)), 3
+        )
+        facts["mean_agreement"] = round(
+            float(sum(v.agreement for v in views) / len(views)), 3
+        )
+        facts["max_conviction"] = round(max(convictions), 4)
+
+        strongest = max(views, key=lambda v: abs(v.conviction))
+        facts["strongest_symbol"] = strongest.symbol
+        facts["strongest_signal"] = round(strongest.signal, 4)
+        facts["strongest_confidence"] = round(strongest.confidence, 3)
+
+        # The seat exists inside a single-instrument pipeline, so the candidate
+        # under consideration is the one the reader actually cares about.
+        mine = next((v for v in views if v.symbol == symbol), None)
+        if mine is not None:
+            facts["candidate_symbol"] = mine.symbol
+            facts["candidate_signal"] = round(mine.signal, 4)
+            facts["candidate_confidence"] = round(mine.confidence, 3)
+            facts["candidate_agreement"] = round(mine.agreement, 3)
+            facts["candidate_contributors"] = ", ".join(mine.contributors)
+
+        contested = [v for v in views if v.agreement < 0.7 and v.coverage > 0.5]
+        if contested:
+            warnings.append(
+                f"{len(contested)} instrument(s) have sources pointing in "
+                "opposite directions. A blended number hides that; the "
+                "disagreement is the finding."
+            )
+        if facts["mean_confidence"] < 0.2:
+            warnings.append(
+                f"Mean ensemble confidence is {facts['mean_confidence']:.2f}. "
+                "The roster is not finding an edge — it is producing noise "
+                "with a direction attached."
+            )
+        if any(not v.is_evidential for v in views):
+            warnings.append(
+                "At least one view derives from non-evidential data. A blend "
+                "does not launder provenance."
+            )
+        return facts, warnings
+
+    def prompt_for(self, facts: dict[str, Any], **inputs: Any) -> str:
+        return (
+            "Interpret the quantitative ensemble's cross-sectional view. "
+            "Confidence here is measured from source agreement and coverage, "
+            "not asserted — treat a low value as genuine evidence of no edge "
+            "rather than as a weak edge. Say plainly whether the sources agree.\n\n"
+            + render_facts(facts)
+        )

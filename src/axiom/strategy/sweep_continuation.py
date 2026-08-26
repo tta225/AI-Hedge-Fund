@@ -43,21 +43,27 @@ class SweepContinuationStrategy(Strategy):
     """Enter *with* a liquidity raid rather than against it.
 
     A buyside sweep — price raiding above a pool of highs — is read as a
-    breakout that will extend, so the trade is long. The stop sits back inside
-    the pool: if price returns below the level it just took, the continuation
-    thesis is dead and there is nothing left to be right about. That is the one
-    part of the setup ICT and this strategy agree on, because it is structural
-    rather than directional.
+    breakout that will extend, so the trade is long. The stop is structural
+    rather than a fixed distance — see :meth:`_stop`, which places it
+    differently depending on whether the raid closed beyond the pool or back
+    inside it. That the stop should be structural at all is the one part of the
+    setup ICT and this strategy agree on, because it is a statement about
+    invalidation rather than about direction.
 
     Args:
         entry_window: bars after the sweep's confirmation during which an entry
             is still valid. The measured effect was over a forward horizon, not
             at a precise bar, so this is genuinely a free parameter.
         require_hold: when True, only take sweeps that did **not** close back
-            inside the pool. Closing back inside is ICT's reversal signature;
-            excluding it should isolate the continuation population — and if
-            the finding is real, this filter should *improve* the result. If it
-            does not, the finding is likely an artefact of pooled populations.
+            inside the pool. **Defaults to False, and under the shipped
+            :class:`~axiom.ict.engine.ICTConfig` True empties the population
+            entirely** — the detector's ``require_close_back`` is on by
+            default, so every sweep it emits closed back inside. That is not an
+            accident: ICT defines a sweep as a rejection, and the base rates in
+            ``REAL_DATA_FINDINGS.md`` were measured on exactly that population.
+            Setting this True is only meaningful against an engine configured
+            with ``sweep_require_close_back=False``, which admits breakout-type
+            raids as well and makes the field discriminating.
         min_penetration_atr: ignore marginal pokes past a pool. A one-tick
             excursion is a data artefact as often as it is a raid.
         max_penetration_atr: ignore violent excursions. Past some distance the
@@ -73,7 +79,7 @@ class SweepContinuationStrategy(Strategy):
         self,
         *,
         entry_window: int = 3,
-        require_hold: bool = True,
+        require_hold: bool = False,
         min_penetration_atr: float = 0.10,
         max_penetration_atr: float = 2.0,
         require_bias_alignment: bool = False,
@@ -122,19 +128,11 @@ class SweepContinuationStrategy(Strategy):
             return None
 
         entry = context.price
-        buffer = self.stop_buffer_atr * atr
-
-        # Stop goes back inside the swept pool. Structural, not a fixed
-        # distance: the thesis is "the level broke and held", so the level
-        # failing to hold is the invalidation.
-        if direction is Direction.BULLISH:
-            stop = sweep.pool_price - buffer
-            if stop >= entry:
-                return None
-        else:
-            stop = sweep.pool_price + buffer
-            if stop <= entry:
-                return None
+        stop = self._stop(context, sweep, direction, atr)
+        if direction is Direction.BULLISH and stop >= entry:
+            return None
+        if direction is Direction.BEARISH and stop <= entry:
+            return None
 
         risk = abs(entry - stop)
         if risk <= 0:
@@ -164,6 +162,40 @@ class SweepContinuationStrategy(Strategy):
             ),
             tags=("sweep_continuation", sweep.kind.value),
         )
+
+    def _stop(
+        self,
+        context: StrategyContext,
+        sweep: LiquiditySweep,
+        direction: Direction,
+        atr: float,
+    ) -> float:
+        """Where the continuation thesis is dead. Depends on the sweep's type.
+
+        A raid that **closed beyond** the pool is a breakout that stuck, and the
+        thesis is "the level broke and held" — so the stop goes back inside the
+        pool, and the level failing to hold is the invalidation.
+
+        A raid that **closed back inside** the pool is the other animal
+        entirely, and it is the population the base rates actually measured. For
+        those, a stop inside the pool is not a stop at all: price is already
+        back inside, so the level is on the wrong side of entry and the trade
+        would be rejected before it was placed. The structural invalidation is
+        instead the far extreme of the raid bar — the origin of the move the
+        continuation thesis expects to resume. Losing it says the raid was the
+        whole move.
+        """
+        buffer = self.stop_buffer_atr * atr
+        if not sweep.closed_back_inside:
+            return (
+                sweep.pool_price - buffer
+                if direction is Direction.BULLISH
+                else sweep.pool_price + buffer
+            )
+        i = sweep.origin_index
+        if direction is Direction.BULLISH:
+            return float(context.series.lows[i]) - buffer
+        return float(context.series.highs[i]) + buffer
 
     def _select(self, context: StrategyContext) -> LiquiditySweep | None:
         """The most recent qualifying sweep, or None."""

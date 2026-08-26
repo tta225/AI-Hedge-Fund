@@ -160,6 +160,41 @@ class TestStopPlacement:
         context = _context(sweeps=[_sweep(kind=LiquidityKind.SELLSIDE, pool_price=95.0)])
         assert SweepContinuationStrategy().evaluate(context) is None
 
+    def test_rejection_sweep_stops_at_the_raid_bar_extreme_not_the_pool(self) -> None:
+        """The pool is on the wrong side of entry once price closed back inside.
+
+        This is the population the base rates were measured on, so getting it
+        wrong is not an edge case — it is the whole experiment.
+        """
+        context = _context(
+            sweeps=[
+                _sweep(
+                    kind=LiquidityKind.BUYSIDE,
+                    pool_price=100.4,
+                    closed_back_inside=True,
+                )
+            ]
+        )
+        signal = SweepContinuationStrategy(stop_buffer_atr=0.25).evaluate(context)
+        assert signal is not None
+        # The flat tape's low is 99.5 on every bar; the pool at 100.4 is above
+        # entry and would have produced no trade at all.
+        assert signal.stop == pytest.approx(99.5 - 0.25)
+
+    def test_rejection_sweep_short_stops_above_the_raid_bar_high(self) -> None:
+        context = _context(
+            sweeps=[
+                _sweep(
+                    kind=LiquidityKind.SELLSIDE,
+                    pool_price=99.6,
+                    closed_back_inside=True,
+                )
+            ]
+        )
+        signal = SweepContinuationStrategy(stop_buffer_atr=0.25).evaluate(context)
+        assert signal is not None
+        assert signal.stop == pytest.approx(100.5 + 0.25)
+
 
 class TestTargeting:
     def test_prefers_the_next_unswept_pool_ahead(self) -> None:
@@ -191,6 +226,18 @@ class TestTargeting:
 
 
 class TestGates:
+    def test_require_hold_defaults_off_because_the_detector_emits_nothing_else(
+        self,
+    ) -> None:
+        """Guards the bug that produced zero trades on a year of real bars.
+
+        ``ICTConfig.sweep_require_close_back`` is True by default, so every
+        sweep the engine emits closed back inside. A strategy defaulting
+        ``require_hold`` to True therefore filters its entire population away
+        and silently never trades.
+        """
+        assert SweepContinuationStrategy().require_hold is False
+
     def test_require_hold_excludes_sweeps_that_closed_back_inside(self) -> None:
         """Closing back inside is ICT's reversal signature, not continuation."""
         sweep = _sweep(closed_back_inside=True)

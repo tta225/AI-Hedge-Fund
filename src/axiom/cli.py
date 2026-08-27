@@ -31,6 +31,7 @@ from axiom.strategy.quant_strategies import (
     TimeSeriesMomentum,
     VolatilityBreakout,
 )
+from axiom.strategy.seasonality import SeasonalityControl, TimeOfDaySeasonality
 from axiom.strategy.sweep_continuation import (
     SweepContinuationStrategy,
     SweepReversalControl,
@@ -51,6 +52,8 @@ STRATEGIES: dict[str, type[Strategy]] = {
     "vol-breakout": VolatilityBreakout,
     "sweep-continuation": SweepContinuationStrategy,
     "sweep-reversal-control": SweepReversalControl,
+    "seasonality": TimeOfDaySeasonality,
+    "seasonality-control": SeasonalityControl,
 }
 
 

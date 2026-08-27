@@ -34,6 +34,7 @@ from axiom.backtest.metrics import daily_returns
 from axiom.core.config import ExecutionSettings, RiskSettings
 from axiom.core.provenance import Provenance
 from axiom.core.series import OHLCVSeries
+from axiom.research.reference import PlausibilityCheck, assess_plausibility
 from axiom.research.statistics import (
     PBOResult,
     deflated_sharpe_ratio,
@@ -100,6 +101,11 @@ class SearchResult:
     skill_threshold_sharpe: float = 0.0
     pbo: PBOResult | None = None
     stability: dict[str, float] = field(default_factory=dict)
+    #: Outside view on the leaderboard leader: where its Sharpe sits against
+    #: the published literature, and how wide its own error bar is. The
+    #: deflated Sharpe and PBO are both internal to the trial set and cannot
+    #: notice that a number is simply implausible.
+    plausibility: PlausibilityCheck | None = None
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -170,6 +176,12 @@ class SearchResult:
         )
         if self.pbo is not None:
             lines.append(f"Overfitting      : {self.pbo.verdict}")
+        if self.plausibility is not None:
+            lines.append(
+                f"Vs literature    : {self.plausibility.percentile:.0%} percentile "
+                f"of published anomalies, 95% CI "
+                f"[{self.plausibility.ci_low:.2f}, {self.plausibility.ci_high:.2f}]"
+            )
         lines.append("")
 
         header = (
@@ -195,6 +207,8 @@ class SearchResult:
             for family, value in sorted(self.stability.items()):
                 lines.append(f"  {family:<40} {value:.2f}")
         lines += ["", self.verdict]
+        if self.plausibility is not None and self.plausibility.is_suspicious:
+            lines += ["", self.plausibility.verdict]
         if self.notes:
             lines += ["", "Notes:"] + [f"  - {n}" for n in self.notes]
         return "\n".join(lines)
@@ -300,6 +314,7 @@ class StrategyLab:
         threshold = self._threshold(results, n_trials=len(candidates))
         pbo = self._pbo(results)
         stability = self._stability(results, deflated)
+        plausibility = self._plausibility(results, deflated)
 
         notes = [
             f"Walk-forward: {len(splits)} folds, expanding train window, "
@@ -322,8 +337,26 @@ class StrategyLab:
             skill_threshold_sharpe=threshold,
             pbo=pbo,
             stability=stability,
+            plausibility=plausibility,
             notes=notes,
         )
+
+    @staticmethod
+    def _plausibility(
+        results: list[CandidateResult], deflated: dict[str, float]
+    ) -> PlausibilityCheck | None:
+        """Outside view on whichever candidate the leaderboard would promote.
+
+        Assessed on the leader rather than on every row because this is a
+        prior about *the number you are about to believe*. Applied across a
+        whole grid it would only restate the dispersion the deflated Sharpe
+        already charges for.
+        """
+        viable = [r for r in results if r.is_viable and r.returns.size >= 3]
+        if not viable:
+            return None
+        best = max(viable, key=lambda r: deflated.get(r.candidate.label, 0.0))
+        return assess_plausibility(best.sharpe, int(best.returns.size))
 
     def _evaluate(
         self, series: OHLCVSeries, candidate: Candidate, splits: list[WalkForwardSplit]

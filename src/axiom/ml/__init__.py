@@ -22,6 +22,7 @@ The methods are from López de Prado, *Advances in Financial Machine Learning*
 third-party implementation was used or copied.
 """
 
+from axiom.ml.classifier import LogisticClassifier, NotFittedError
 from axiom.ml.crossval import (
     PurgedKFold,
     PurgedWalkForward,
@@ -44,11 +45,20 @@ from axiom.ml.labelling import (
     triple_barrier_labels,
     volatility_target,
 )
+from axiom.ml.meta import (
+    MetaLabelFilter,
+    MetaTrainingReport,
+    collect_signals,
+    default_features,
+    train_meta_filter,
+)
 
 __all__ = [
-    "Barriers", "FeatureImportance", "Label", "LabelSet", "PurgedKFold",
-    "PurgedWalkForward", "embargo_size", "frac_diff_weights",
-    "fractional_difference", "mean_decrease_accuracy", "meta_label",
-    "minimum_stationary_d", "purged_train_indices", "sample_uniqueness",
-    "time_decay_weights", "triple_barrier_labels", "volatility_target",
+    "Barriers", "FeatureImportance", "Label", "LabelSet", "LogisticClassifier",
+    "MetaLabelFilter", "MetaTrainingReport", "NotFittedError", "PurgedKFold",
+    "PurgedWalkForward", "collect_signals", "default_features", "embargo_size",
+    "frac_diff_weights", "fractional_difference", "mean_decrease_accuracy",
+    "meta_label", "minimum_stationary_d", "purged_train_indices",
+    "sample_uniqueness", "time_decay_weights", "train_meta_filter",
+    "triple_barrier_labels", "volatility_target",
 ]

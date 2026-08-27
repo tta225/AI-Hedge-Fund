@@ -330,9 +330,25 @@ def meta_label(labels: LabelSet, predicted_sides: np.ndarray | list[int]) -> Lab
     can do is trade less.
 
     Args:
-        labels: output of :func:`triple_barrier_labels`.
+        labels: output of :func:`triple_barrier_labels` called **without**
+            ``sides`` — that is, directional labels where ``+1`` means price
+            went up, not "the trade worked".
         predicted_sides: the primary model's side per label, ``+1``/``-1``.
+
+    Raises:
+        ValueError: if ``labels`` was itself built with short sides. Those
+            labels are already oriented to the trade, so ``+1`` already means
+            the primary model was right and meta-labelling is a comparison
+            against a direction it no longer carries. Silently proceeding would
+            invert every short.
     """
+    if any(label.side < 0 for label in labels.labels):
+        raise ValueError(
+            "these labels were built with sides, so they already encode "
+            "whether the trade worked (+1) rather than which way price went. "
+            "Meta-labelling them again would compare an outcome against a "
+            "direction and invert every short — use `labels.y == 1` directly."
+        )
     sides = np.asarray(predicted_sides, dtype=int)
     if sides.shape[0] != len(labels.labels):
         raise ValueError(

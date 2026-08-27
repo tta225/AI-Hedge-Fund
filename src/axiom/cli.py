@@ -593,6 +593,144 @@ def cache_data(
         )
 
 
+@app.command("desk-status")
+def desk_status(
+    db: str = typer.Option("data/desk.db", help="Desk database."),
+) -> None:
+    """What the desk believes right now: halts, open orders, positions, equity.
+
+    The first thing to run after a restart, and the first thing to run when
+    something looks wrong. It reads and never writes, so it is safe to run
+    against a live desk.
+    """
+    from axiom.store import Store
+
+    try:
+        store = Store(db)
+    except Exception as exc:
+        console.print(f"[red]cannot open {db}: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    with store:
+        halts = store.active_halts()
+        if halts:
+            console.print(f"[red]HALTED — {len(halts)} uncleared[/red]")
+            for halt in halts:
+                console.print(f"  [red]{halt['reason']}[/red]: {halt['detail'][:120]}")
+        else:
+            console.print("[green]No active halts[/green]")
+
+        orders = store.open_orders()
+        console.print(f"\nOpen orders: {len(orders)}")
+        for order in orders:
+            console.print(
+                f"  #{order.id} {order.instrument.symbol} {order.side.value} "
+                f"{order.quantity:g} — {order.status.value} "
+                f"(filled {order.filled_quantity:g})"
+            )
+
+        positions = store.positions()
+        console.print(f"\nPositions: {len(positions)}")
+        for symbol, quantity in sorted(positions.items()):
+            console.print(f"  {symbol:<10} {quantity:+g}")
+
+        curve = store.equity_curve()
+        if curve.empty:
+            console.print("\nNo equity marks recorded.")
+        else:
+            peak = float(curve.max())
+            last = float(curve.iloc[-1])
+            drawdown = (peak - last) / peak * 100.0 if peak > 0 else 0.0
+            console.print(
+                f"\nEquity {last:,.2f} | peak {peak:,.2f} | "
+                f"drawdown {drawdown:.2f}% | {len(curve)} marks"
+            )
+
+
+@app.command("desk-halt")
+def desk_halt(
+    reason: str = typer.Argument(..., help="Why trading is being stopped."),
+    db: str = typer.Option("data/desk.db"),
+) -> None:
+    """Stop the desk. Survives restarts until explicitly cleared."""
+    import pandas as pd
+
+    from axiom.store import Store
+
+    with Store(db) as store:
+        halt_id = store.record_halt(reason, pd.Timestamp.now(tz="UTC"))
+    console.print(f"[red]Halt #{halt_id} recorded: {reason}[/red]")
+
+
+@app.command("desk-resume")
+def desk_resume(
+    halt_id: int = typer.Argument(..., help="Halt to clear (see desk-status)."),
+    confirm: str = typer.Option("", help="Type the halt id again to confirm."),
+    db: str = typer.Option("data/desk.db"),
+) -> None:
+    """Clear one halt. Requires confirmation, because resuming is the risky direction."""
+    if confirm != str(halt_id):
+        console.print(
+            f"[red]Refusing: pass --confirm {halt_id}. Clearing a halt without "
+            "understanding why it fired is how the same failure happens twice."
+            "[/red]"
+        )
+        raise typer.Exit(1)
+
+    import pandas as pd
+
+    from axiom.store import Store
+
+    with Store(db) as store:
+        matching = [h for h in store.active_halts() if int(h["id"]) == halt_id]
+        if not matching:
+            console.print(f"[yellow]No active halt #{halt_id}[/yellow]")
+            raise typer.Exit(1)
+        store.clear_halt(halt_id, pd.Timestamp.now(tz="UTC"))
+    console.print(f"[green]Halt #{halt_id} cleared[/green]")
+
+
+
+@app.command("meta-train")
+def meta_train(
+    strategy: str = typer.Option("sweep-continuation", help=f"One of: {', '.join(STRATEGIES)}"),
+    symbols: str = typer.Option("BTC-USD,ETH-USD,SOL-USD", help="Comma-separated."),
+    timeframe: str = typer.Option("1h"),
+    data_root: str = typer.Option("data/cache"),
+    threshold: float = typer.Option(0.5, help="Probability below which a signal is declined."),
+) -> None:
+    """Fit a meta-label filter on a strategy's own historical signals.
+
+    Reports out-of-sample precision against the unfiltered base rate, with the
+    standard error, so a lift can be read as evidence or as noise. A filter can
+    only ever decline trades, so the worst case here is trading less.
+    """
+    from axiom.ml.meta import train_meta_filter
+
+    if strategy not in STRATEGIES:
+        console.print(f"[red]Unknown strategy. One of: {', '.join(STRATEGIES)}[/red]")
+        raise typer.Exit(1)
+
+    for symbol in (s.strip() for s in symbols.split(",") if s.strip()):
+        try:
+            series = CSVProvider(data_root).fetch(
+                get_instrument(symbol), timeframe, days=10_000
+            )
+        except (ProviderError, FileNotFoundError) as exc:
+            console.print(f"[red]{symbol}: {exc}[/red]")
+            continue
+
+        console.print(f"\n[bold]{symbol} {timeframe}[/bold] — {len(series):,} bars")
+        try:
+            _, report = train_meta_filter(
+                STRATEGIES[strategy](), series, threshold=threshold
+            )
+        except ValueError as exc:
+            console.print(f"[yellow]  skipped: {exc}[/yellow]")
+            continue
+        console.print(report.render())
+
+
 def main() -> None:
     app()
 

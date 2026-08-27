@@ -294,6 +294,11 @@ class DeskRunner:
             return False
 
         key = self._idempotency_key(order, timestamp)
+        # Carried on the order so a venue that supports client-side order ids
+        # can enforce the same guarantee. Alpaca rejects a duplicate outright,
+        # which is what turns "the submit timed out, did it land?" from a
+        # position-doubling hazard into a safe retry.
+        order.tag = key
         order_id, was_new = self.store.record_order(order, key, timestamp)
         if not was_new:
             # The same decision, already sent. This is the retry path working.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -19,6 +20,7 @@ from axiom.data.base import BarRequest, ProviderError
 from axiom.data.providers import CSVProvider
 from axiom.data.registry import default_registry
 from axiom.data.synthetic import SyntheticProvider
+from axiom.execution.base import ExecutionError
 from axiom.ict.engine import ICTConfig, ICTEngine
 from axiom.portfolio.positions import Portfolio
 from axiom.quant.regime import RegimeModel
@@ -729,6 +731,55 @@ def meta_train(
             console.print(f"[yellow]  skipped: {exc}[/yellow]")
             continue
         console.print(report.render())
+
+
+@app.command("venue-check")
+def venue_check(
+    live: bool = typer.Option(False, help="Check the LIVE account instead of paper."),
+    db: str = typer.Option("data/desk.db", help="Desk database to reconcile against."),
+) -> None:
+    """Verify the broker connection and reconcile its book against ours.
+
+    Read-only: it places nothing and cancels nothing. Run it before arming the
+    desk and after any incident — a disagreement here is the single most
+    important thing to know before trading, because sizing against a wrong
+    position book produces a correct-looking number for the wrong account.
+    """
+    from axiom.execution.alpaca import AlpacaVenue
+    from axiom.store import Store, reconcile_positions
+
+    venue = AlpacaVenue(paper=not live)
+    if live:
+        console.print("[bold red]Checking the LIVE account — real money.[/bold red]")
+    console.print(venue.check_credentials())
+
+    try:
+        broker = venue.positions()
+        working = venue.working_orders()
+    except ExecutionError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(f"\nBroker positions: {len(broker)}")
+    for symbol, quantity in sorted(broker.items()):
+        console.print(f"  {symbol:<10} {quantity:+g}")
+    console.print(f"Broker working orders: {len(working)}")
+
+    if not Path(db).exists():
+        console.print(
+            f"\n[yellow]No desk database at {db} — nothing to reconcile "
+            "against yet.[/yellow]"
+        )
+        return
+
+    with Store(db) as store:
+        result = reconcile_positions(store.positions(), broker)
+    console.print()
+    if result.is_clean:
+        console.print(f"[green]{result.render()}[/green]")
+    else:
+        console.print(f"[red]{result.render()}[/red]")
+        raise typer.Exit(1)
 
 
 def main() -> None:

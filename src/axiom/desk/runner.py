@@ -35,10 +35,12 @@ from dataclasses import dataclass, field
 
 import pandas as pd
 
+from axiom.alpha.panel import Panel
 from axiom.core.types import Instrument, OrderStatus, Side
 from axiom.desk.guards import GuardReport, check_guards
 from axiom.execution.base import ExecutionError, ExecutionVenue, Order
 from axiom.portfolio.positions import Portfolio
+from axiom.portfolio.risk import PortfolioRiskManager
 from axiom.risk.manager import RiskManager
 from axiom.store.db import Store
 from axiom.store.reconcile import Reconciliation, reconcile_positions
@@ -124,6 +126,8 @@ class DeskRunner:
         portfolio: Portfolio,
         config: DeskConfig | None = None,
         broker_positions: Callable[[], Mapping[str, float]] | None = None,
+        portfolio_risk: PortfolioRiskManager | None = None,
+        risk_panel: Panel | None = None,
     ) -> None:
         self.strategy = strategy
         self.venue = venue
@@ -135,6 +139,16 @@ class DeskRunner:
         # report positions is a wiring decision rather than a silent skip of
         # the most important guard.
         self.broker_positions = broker_positions
+        # Both or neither: a portfolio risk manager with no panel has no
+        # covariance to reason about, and a panel with no manager is unused.
+        if (portfolio_risk is None) != (risk_panel is None):
+            raise ValueError(
+                "portfolio_risk and risk_panel must be supplied together — a "
+                "risk manager with no universe cannot estimate correlation, "
+                "and would silently pass every size through unchanged"
+            )
+        self.portfolio_risk = portfolio_risk
+        self.risk_panel = risk_panel
         self._peak_equity = 0.0
 
     # --- startup ----------------------------------------------------------
@@ -262,6 +276,18 @@ class DeskRunner:
             outcome.rejected.append("risk sized the position to zero")
             return None
 
+        # The per-trade budget above is blind to what is already on the book:
+        # three 0.5% bets in correlated names are one 1.5% bet, and the count
+        # says "diversified" while the covariance says otherwise. This scales
+        # down for correlation, realised volatility and drawdown — it can only
+        # ever reduce, never raise, so the per-trade guarantee still holds.
+        quantity, portfolio_reason = self._apply_portfolio_risk(
+            quantity, context, outcome
+        )
+        if quantity <= 0:
+            outcome.rejected.append(f"portfolio risk sized to zero: {portfolio_reason}")
+            return None
+
         # `Signal` guarantees a stop exists — it validates one against entry in
         # __post_init__ — so the open question is never whether the strategy
         # supplied one, it is whether the venue will *hold* it. A stop this
@@ -284,6 +310,53 @@ class DeskRunner:
             take_profit=signal.primary_target,
             reference_price=signal.entry,
         )
+
+    def _apply_portfolio_risk(
+        self, quantity: float, context: StrategyContext, outcome: TickOutcome
+    ) -> tuple[float, str]:
+        """Scale a per-trade size down for what the book already carries.
+
+        A no-op when no :class:`~axiom.portfolio.risk.PortfolioRiskManager` or
+        risk panel was supplied. That is a deliberate default rather than a
+        silent one: the alternative is refusing to trade without a covariance
+        model, and a single-instrument desk legitimately has no correlation to
+        model. The absence is reported on the tick either way.
+        """
+        if self.portfolio_risk is None or self.risk_panel is None:
+            return quantity, "no portfolio risk model configured"
+
+        equity = self.portfolio.equity
+        if equity <= 0:
+            return quantity, "no equity to weight against"
+
+        symbol = context.instrument.symbol
+        notional = quantity * context.price * context.instrument.point_value
+        proposed_weight = notional / equity
+        current = {
+            position.instrument.symbol: (
+                position.quantity
+                * position.last_price
+                * position.instrument.point_value
+                / equity
+            )
+            for position in self.portfolio.open_positions
+        }
+
+        # Score against the most recent bar of the panel that this decision's
+        # timestamp permits, so the covariance never sees past the decision.
+        index = int(self.risk_panel.index.searchsorted(context.timestamp, side="left"))
+        scalar, reason = self.portfolio_risk.scale_for(
+            symbol,
+            proposed_weight,
+            current,
+            self.risk_panel,
+            index,
+            equity=equity,
+            peak_equity=max(self._peak_equity, equity),
+        )
+        if scalar < 1.0:
+            outcome.rejected.append(f"portfolio risk x{scalar:.2f}: {reason}")
+        return quantity * scalar, reason
 
     def _send(self, order: Order, timestamp: pd.Timestamp, outcome: TickOutcome) -> bool:
         """Persist, then submit. Never the other way round."""

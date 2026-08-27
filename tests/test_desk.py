@@ -13,7 +13,7 @@ from axiom.desk.guards import (
     check_drawdown,
     check_guards,
 )
-from axiom.desk.runner import DeskConfig, DeskRunner, flatten_all
+from axiom.desk.runner import DeskConfig, DeskRunner, TickOutcome, flatten_all
 from axiom.execution.base import ExecutionError, ExecutionVenue, Fill, Order
 from axiom.ict.models import ICTState
 from axiom.portfolio.positions import Portfolio
@@ -592,3 +592,116 @@ class TestFlattenAll:
 
     def test_an_unknown_instrument_is_skipped_not_fatal(self) -> None:
         assert flatten_all(_RecordingVenue(), {"WAT": 1.0}, {}, T0) == []
+
+
+class TestPortfolioRiskIntegration:
+    """The desk must actually shrink a size for what the book already holds."""
+
+    @staticmethod
+    def _panel(correlation: float, n: int = 600) -> object:
+        import numpy as np
+
+        from axiom.alpha.panel import Panel
+        from axiom.core.provenance import Provenance
+
+        rng = np.random.default_rng(3)
+        base = rng.normal(size=n) * 0.02
+        other = correlation * base + np.sqrt(max(1 - correlation**2, 0.0)) * (
+            rng.normal(size=n) * 0.02
+        )
+        rows = [(100.0, 101.0, 99.0, 100.0) for _ in range(n)]
+        series = make_series(rows, instrument=BTC, timeframe="1h")
+        closes = np.column_stack(
+            [100.0 * np.exp(np.cumsum(base)), 100.0 * np.exp(np.cumsum(other))]
+        )
+        return Panel(
+            symbols=("BTC-USD", "ETH-USD"),
+            index=series.index,
+            closes=closes,
+            volumes=np.ones_like(closes),
+            provenance=Provenance.real("test"),
+        )
+
+    def _runner_with_risk(
+        self, store: Store, correlation: float, *, limit: float = 0.30
+    ) -> tuple[DeskRunner, StrategyContext, _RecordingVenue]:
+        from axiom.portfolio.risk import PortfolioRiskManager
+
+        panel = self._panel(correlation)
+        venue = _RecordingVenue()
+        runner, context = _runner(store, venue=venue)
+        runner.portfolio_risk = PortfolioRiskManager(volatility_limit=limit)
+        runner.risk_panel = panel  # type: ignore[assignment]
+        return runner, context, venue
+
+    def test_both_or_neither_is_enforced(self, store: Store) -> None:
+        """A risk manager with no universe would silently pass sizes through."""
+        from axiom.portfolio.risk import PortfolioRiskManager
+
+        with pytest.raises(ValueError, match="must be supplied together"):
+            DeskRunner(
+                strategy=_AlwaysLong(),
+                venue=_RecordingVenue(),
+                store=store,
+                risk=RiskManager(),
+                portfolio=Portfolio(starting_cash=1_000_000),
+                portfolio_risk=PortfolioRiskManager(),
+            )
+
+    def test_no_model_configured_is_a_no_op(self, store: Store) -> None:
+        runner, context = _runner(store)
+        quantity, reason = runner._apply_portfolio_risk(
+            10.0, context, TickOutcome(at=T0, guards=check_guards(
+                now=T0, last_bar_at=T0, expected_interval=pd.Timedelta(hours=1),
+                equity=1.0, peak_equity=1.0, store_halted=False,
+                kill_switch=False, reconciled=True,
+            ))
+        )
+        assert quantity == 10.0
+        assert "no portfolio risk model" in reason
+
+    def test_a_tight_volatility_limit_shrinks_the_order(self, store: Store) -> None:
+        loose_store = Store(":memory:")
+        loose, context, loose_venue = self._runner_with_risk(
+            loose_store, 0.9, limit=100.0
+        )
+        tight, _, tight_venue = self._runner_with_risk(store, 0.9, limit=0.005)
+        loose.tick(context)
+        tight.tick(context)
+        assert loose_venue.submitted and tight_venue.submitted
+        assert tight_venue.submitted[0].quantity < loose_venue.submitted[0].quantity
+        loose_store.close()
+
+    def test_the_reduction_is_explained_on_the_tick(self, store: Store) -> None:
+        runner, context, _ = self._runner_with_risk(store, 0.9, limit=0.005)
+        outcome = runner.tick(context)
+        assert any("portfolio risk x" in r for r in outcome.rejected)
+
+    def test_a_drawdown_shrinks_the_order(self, store: Store) -> None:
+        healthy_store = Store(":memory:")
+        healthy, context, healthy_venue = self._runner_with_risk(
+            healthy_store, 0.1, limit=100.0
+        )
+        bleeding, _, bleeding_venue = self._runner_with_risk(store, 0.1, limit=100.0)
+        # 7%: past the 5% de-risk start, but below the guards' 10% halt. The
+        # bands overlap by design and the guard wins, so a deeper drawdown
+        # would stop the desk entirely and send nothing to compare.
+        bleeding._peak_equity = healthy.portfolio.equity / 0.93
+        healthy.tick(context)
+        bleeding.tick(context)
+        assert bleeding_venue.submitted[0].quantity < healthy_venue.submitted[0].quantity
+        healthy_store.close()
+
+    def test_it_can_only_reduce_never_raise(self, store: Store) -> None:
+        """The per-trade budget is a guarantee; this layer must not override it."""
+        plain_store = Store(":memory:")
+        plain, context, plain_venue = self._runner_with_risk(
+            plain_store, 0.1, limit=1000.0
+        )
+        plain.portfolio_risk = None
+        plain.risk_panel = None
+        scaled, _, scaled_venue = self._runner_with_risk(store, 0.1, limit=1000.0)
+        plain.tick(context)
+        scaled.tick(context)
+        assert scaled_venue.submitted[0].quantity <= plain_venue.submitted[0].quantity
+        plain_store.close()

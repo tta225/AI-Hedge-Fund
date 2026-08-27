@@ -126,6 +126,19 @@ class AlphaEnsemble:
             # blending `signal * confidence` and then reporting
             # `signal * confidence` again as conviction) would square it and
             # shrink every consensus toward zero for no stated reason.
+            unknown = {s.agent_id for s in group} - set(self.weights)
+            if unknown:
+                # A bare KeyError here surfaces deep inside a backtest loop as
+                # an unattributable failure. The contract is that a signal's
+                # agent_id names a member of the roster, and a wrapper that
+                # renames itself without renaming its signals breaks it
+                # silently — so say exactly that.
+                raise KeyError(
+                    f"signals carry agent_id(s) {sorted(unknown)} that are not "
+                    f"in this ensemble's roster {sorted(self.weights)}. An "
+                    "agent that wraps another must rewrite the agent_id on the "
+                    "signals it returns, not only on itself."
+                )
             weights = [self.weights[s.agent_id] * s.confidence for s in group]
             total_weight = sum(weights)
             if total_weight <= 0:

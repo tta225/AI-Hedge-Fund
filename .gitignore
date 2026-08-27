@@ -20,3 +20,6 @@ runs/
 .DS_Store
 .idea/
 .vscode/
+data/equities/
+data/equities_confirm/
+data/desk.db*

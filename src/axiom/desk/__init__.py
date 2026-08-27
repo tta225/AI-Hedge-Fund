@@ -10,6 +10,7 @@ invariant is restored on startup by reading :mod:`axiom.store`, so a hard kill
 and a graceful stop leave the desk in the same state.
 """
 
+from axiom.desk.fills import FillPoller, PollOutcome
 from axiom.desk.guards import (
     GuardReport,
     GuardStatus,
@@ -19,6 +20,6 @@ from axiom.desk.guards import (
 from axiom.desk.runner import DeskConfig, DeskRunner, TickOutcome
 
 __all__ = [
-    "DeskConfig", "DeskRunner", "GuardReport", "GuardStatus", "TickOutcome",
-    "check_data_freshness", "check_guards",
+    "DeskConfig", "DeskRunner", "FillPoller", "GuardReport", "GuardStatus",
+    "PollOutcome", "TickOutcome", "check_data_freshness", "check_guards",
 ]

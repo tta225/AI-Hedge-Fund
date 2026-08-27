@@ -41,7 +41,7 @@ import pandas as pd
 from axiom.core.types import Instrument, OrderStatus, Side, get_instrument
 from axiom.execution.base import Fill, Order
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 CREATE INDEX IF NOT EXISTS orders_created ON orders (created_us);
 CREATE INDEX IF NOT EXISTS orders_symbol  ON orders (symbol);
+CREATE INDEX IF NOT EXISTS orders_venue_id ON orders (venue_order_id);
 
 CREATE TABLE IF NOT EXISTS order_events (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,7 +80,11 @@ CREATE INDEX IF NOT EXISTS order_events_order ON order_events (order_id, id);
 
 CREATE TABLE IF NOT EXISTS fills (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id      INTEGER NOT NULL REFERENCES orders (id),
+    -- Nullable on purpose. A bracket's protective legs fill under order ids
+    -- the desk never submitted, and a human can trade the account directly.
+    -- Dropping those fills would leave real position changes invisible, which
+    -- is exactly the drift reconciliation exists to catch.
+    order_id      INTEGER REFERENCES orders (id),
     venue_fill_id TEXT    UNIQUE,
     symbol        TEXT    NOT NULL,
     side          TEXT    NOT NULL,
@@ -182,7 +187,53 @@ class Store:
                 (str(SCHEMA_VERSION),),
             )
             self._connection.commit()
+        self._migrate()
         self._check_schema_version()
+
+    def _migrate(self) -> None:
+        """Bring an older database forward, in place.
+
+        Only forward, and only across versions this build knows. A database
+        newer than the running code is refused by
+        :meth:`_check_schema_version` rather than guessed at — downgrading
+        schema by inference is how a desk silently drops a column it needed.
+        """
+        row = self._connection.execute(
+            "SELECT value FROM meta WHERE key = 'schema_version'"
+        ).fetchone()
+        found = int(row["value"]) if row else SCHEMA_VERSION
+
+        if found == 1:
+            # v1 declared fills.order_id NOT NULL, which cannot hold a bracket
+            # leg or a manual trade. SQLite cannot drop a NOT NULL, so the
+            # table is rebuilt and the rows copied.
+            with self._write() as connection:
+                connection.executescript(
+                    """
+                    ALTER TABLE fills RENAME TO fills_v1;
+                    CREATE TABLE fills (
+                        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                        order_id      INTEGER REFERENCES orders (id),
+                        venue_fill_id TEXT    UNIQUE,
+                        symbol        TEXT    NOT NULL,
+                        side          TEXT    NOT NULL,
+                        quantity      REAL    NOT NULL,
+                        price         REAL    NOT NULL,
+                        commission    REAL    NOT NULL DEFAULT 0.0,
+                        slippage      REAL    NOT NULL DEFAULT 0.0,
+                        strategy      TEXT    NOT NULL DEFAULT '',
+                        at_us         INTEGER NOT NULL
+                    );
+                    INSERT INTO fills SELECT * FROM fills_v1;
+                    DROP TABLE fills_v1;
+                    CREATE INDEX IF NOT EXISTS fills_order  ON fills (order_id);
+                    CREATE INDEX IF NOT EXISTS fills_symbol ON fills (symbol, at_us);
+                    """
+                )
+                connection.execute(
+                    "UPDATE meta SET value = '2' WHERE key = 'schema_version'"
+                )
+            found = 2
 
     def _check_schema_version(self) -> None:
         row = self._connection.execute(
@@ -353,8 +404,38 @@ class Store:
 
     # --- fills ------------------------------------------------------------
 
+    def order_by_venue_id(self, venue_order_id: str) -> StoredOrder | None:
+        """Find a local order by the id the venue gave it.
+
+        The link a fill poller needs: a venue reports executions against its
+        own order id, and without this the fill cannot be attributed to the
+        decision that caused it.
+        """
+        row = self._connection.execute(
+            "SELECT * FROM orders WHERE venue_order_id = ?", (venue_order_id,)
+        ).fetchone()
+        return None if row is None else self._hydrate(row)
+
+    def get_meta(self, key: str, default: str = "") -> str:
+        """Read a small piece of desk state — a poll watermark, say."""
+        row = self._connection.execute(
+            "SELECT value FROM meta WHERE key = ?", (key,)
+        ).fetchone()
+        return str(row["value"]) if row is not None else default
+
+    def set_meta(self, key: str, value: str) -> None:
+        """Write desk state. Guards the schema key, which is not a scratchpad."""
+        if key == "schema_version":
+            raise ValueError(
+                "schema_version is managed by migrations, not by callers"
+            )
+        with self._write() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", (key, value)
+            )
+
     def record_fill(
-        self, order_id: int, fill: Fill, venue_fill_id: str | None = None
+        self, order_id: int | None, fill: Fill, venue_fill_id: str | None = None
     ) -> bool:
         """Persist an execution report. Returns False if already recorded.
 

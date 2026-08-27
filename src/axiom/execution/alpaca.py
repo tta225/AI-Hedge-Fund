@@ -89,8 +89,27 @@ _STATUS: dict[str, OrderStatus] = {
     "stopped": OrderStatus.REJECTED,
 }
 
+#: Alpaca's hard cap on activities per page. Discovered the way these things
+#: usually are: a 422 from the live API rejecting page_size=500.
+MAX_FILL_PAGE = 100
+
 #: Quote currencies recognised when a crypto pair arrives without a separator.
 _CRYPTO_QUOTES = ("USDT", "USDC", "USD", "EUR", "GBP", "BTC")
+
+
+@dataclass(frozen=True, slots=True)
+class VenueFill:
+    """One execution as the venue reports it, before local attribution.
+
+    Kept distinct from :class:`~axiom.execution.base.Fill` because the two ids
+    live in different namespaces: the venue's are opaque strings it assigns,
+    ours are integers this process assigns. Conflating them is how a fill gets
+    attributed to whichever local order happens to share a number.
+    """
+
+    venue_fill_id: str
+    venue_order_id: str
+    fill: Fill
 
 
 @dataclass(frozen=True, slots=True)
@@ -234,9 +253,10 @@ class AlpacaVenue(ExecutionVenue):
             401: " — check APCA_API_KEY_ID / APCA_API_SECRET_KEY",
             403: " — the account may be blocked from trading, or the key is "
                  "for the other environment (paper keys do not work live)",
-            422: " — Alpaca rejected the order parameters; a duplicate "
-                 "client_order_id also lands here, which means the original "
-                 "order already exists",
+            422: " — Alpaca rejected the request parameters. On an order "
+                 "POST this is usually a duplicate client_order_id, meaning "
+                 "the original order already exists; on a GET it is usually a "
+                 "page size or date range outside the endpoint's limits",
             429: " — rate limited",
         }.get(code, "")
 
@@ -397,43 +417,74 @@ class AlpacaVenue(ExecutionVenue):
             self._venue_ids[order.order_id] = venue_id
         return order
 
-    def fills_since(self, since: pd.Timestamp, limit: int = 500) -> list[tuple[str, Fill]]:
-        """Executions after ``since``, newest last, each with its venue fill id.
+    def fills_since(self, since: pd.Timestamp, limit: int = MAX_FILL_PAGE) -> list[VenueFill]:
+        """Every execution after ``since``, oldest first, following pagination.
 
-        Returns ``(venue_fill_id, fill)`` pairs so
-        :meth:`~axiom.store.db.Store.record_fill` can deduplicate. Polling
-        rather than streaming: a poll that overlaps a previous window books
-        nothing twice, whereas a websocket that reconnects past a message loses
-        a fill silently, and a lost fill is an unmanaged position.
+        Each carries the venue's fill id, so
+        :meth:`~axiom.store.db.Store.record_fill` can deduplicate, and the
+        venue's *order* id, which is the only way to attribute an execution
+        back to the decision that caused it.
+
+        Polling rather than streaming: a poll that overlaps a previous window
+        books nothing twice, whereas a websocket that reconnects past a message
+        loses a fill silently, and a lost fill is an unmanaged position.
+
+        **Pages until exhausted, deliberately.** Alpaca caps a page at
+        :data:`MAX_FILL_PAGE` activities and returns the first page only. A
+        single request would therefore truncate a busy session silently, and
+        the poller — having no way to know it was truncated — would advance its
+        watermark past the fills it never saw. That loses them permanently,
+        which is the exact failure this whole module exists to prevent.
+
+        Args:
+            since: exclusive lower bound on transaction time.
+            limit: page size, clamped to Alpaca's maximum. Total results are
+                not limited; every page is followed.
         """
         after = pd.Timestamp(since)
         if after.tzinfo is None:
             after = after.tz_localize("UTC")
-        query = urllib.parse.urlencode(
-            {
-                "activity_types": "FILL",
-                "after": after.tz_convert("UTC").isoformat().replace("+00:00", "Z"),
-                "page_size": str(limit),
-                "direction": "asc",
-            }
-        )
-        payload = self._request("GET", f"/v2/account/activities?{query}")
 
         from axiom.core.types import get_instrument
 
-        out: list[tuple[str, Fill]] = []
-        for row in payload or []:
+        rows: list[dict[str, Any]] = []
+        page_token: str | None = None
+        while True:
+            query: dict[str, str] = {
+                "activity_types": "FILL",
+                "after": after.tz_convert("UTC").isoformat().replace("+00:00", "Z"),
+                "page_size": str(min(max(limit, 1), MAX_FILL_PAGE)),
+                "direction": "asc",
+            }
+            if page_token:
+                query["page_token"] = page_token
+            page = self._request(
+                "GET", f"/v2/account/activities?{urllib.parse.urlencode(query)}"
+            )
+            batch = list(page or [])
+            rows.extend(batch)
+            # Alpaca pages activities by the id of the last row returned, and
+            # signals the end by returning fewer rows than asked for.
+            if len(batch) < min(max(limit, 1), MAX_FILL_PAGE):
+                break
+            page_token = str(batch[-1].get("id", ""))
+            if not page_token:
+                break
+
+        out: list[VenueFill] = []
+        for row in rows:
             quantity = abs(float(row.get("qty") or 0.0))
             if quantity <= 0:
                 continue
             symbol = self.local_symbol(str(row.get("symbol", "")))
             out.append(
-                (
-                    str(row.get("id", "")),
-                    Fill(
+                VenueFill(
+                    venue_fill_id=str(row.get("id", "")),
+                    venue_order_id=str(row.get("order_id", "")),
+                    fill=Fill(
                         # Alpaca's order id is a UUID and our Order.order_id is
-                        # an int, so the linkage is made by the caller against
-                        # its own record rather than invented here.
+                        # an int, so the linkage is resolved by the caller
+                        # against its own record rather than invented here.
                         order_id=0,
                         instrument=get_instrument(symbol),
                         side=Side.BUY if str(row.get("side")) == "buy" else Side.SELL,

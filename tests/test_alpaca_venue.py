@@ -325,26 +325,62 @@ class TestAccount:
 
 
 class TestFills:
+    def test_pages_until_the_venue_runs_out(self) -> None:
+        """A truncated poll advances the watermark past fills it never saw."""
+        full = [
+            {"id": f"f{i}", "order_id": "o", "symbol": "AAPL", "side": "buy",
+             "qty": "1", "price": "1", "transaction_time": "2026-01-01T15:00:00Z"}
+            for i in range(100)
+        ]
+        tail = [{"id": "f100", "order_id": "o", "symbol": "AAPL", "side": "buy",
+                 "qty": "1", "price": "1",
+                 "transaction_time": "2026-01-01T15:00:00Z"}]
+        venue = _StubVenue([full, tail])
+        assert len(venue.fills_since(T0)) == 101
+        assert "page_token=f99" in venue.calls[-1][1]
+
+    def test_a_short_page_ends_the_walk(self) -> None:
+        venue = _StubVenue([[{
+            "id": "f", "order_id": "o", "symbol": "AAPL", "side": "buy",
+            "qty": "1", "price": "1",
+            "transaction_time": "2026-01-01T15:00:00Z",
+        }]])
+        venue.fills_since(T0)
+        assert len(venue.calls) == 1
+
+    def test_page_size_is_clamped_to_the_venue_maximum(self) -> None:
+        """Alpaca rejects page_size above 100 with a 422."""
+        venue = _StubVenue([[]])
+        venue.fills_since(T0, limit=5000)
+        assert "page_size=100" in venue.calls[-1][1]
+
     def test_parses_activities(self) -> None:
         venue = _StubVenue([[{
-            "id": "fill-1", "symbol": "AAPL", "side": "buy", "qty": "5",
-            "price": "150.25", "transaction_time": "2026-01-01T15:00:00Z",
+            "id": "fill-1", "order_id": "o-1", "symbol": "AAPL", "side": "buy",
+            "qty": "5", "price": "150.25",
+            "transaction_time": "2026-01-01T15:00:00Z",
         }]])
         fills = venue.fills_since(T0)
         assert len(fills) == 1
-        venue_id, fill = fills[0]
-        assert venue_id == "fill-1"
-        assert fill.quantity == pytest.approx(5.0)
-        assert fill.price == pytest.approx(150.25)
-        assert fill.side is Side.BUY
+        assert fills[0].venue_fill_id == "fill-1"
+        assert fills[0].fill.quantity == pytest.approx(5.0)
+        assert fills[0].fill.price == pytest.approx(150.25)
+        assert fills[0].fill.side is Side.BUY
+
+    def test_the_venue_order_id_is_carried_for_attribution(self) -> None:
+        """Without it a fill cannot be linked to the decision that caused it."""
+        venue = _StubVenue([[{
+            "id": "f", "order_id": "order-abc", "symbol": "AAPL", "side": "buy",
+            "qty": "1", "price": "1", "transaction_time": "2026-01-01T15:00:00Z",
+        }]])
+        assert venue.fills_since(T0)[0].venue_order_id == "order-abc"
 
     def test_crypto_fills_come_back_in_local_spelling(self) -> None:
         venue = _StubVenue([[{
             "id": "f", "symbol": "BTC/USD", "side": "sell", "qty": "0.1",
             "price": "60000", "transaction_time": "2026-01-01T15:00:00Z",
         }]])
-        _, fill = venue.fills_since(T0)[0]
-        assert fill.instrument.symbol == "BTC-USD"
+        assert venue.fills_since(T0)[0].fill.instrument.symbol == "BTC-USD"
 
     def test_zero_quantity_rows_are_skipped(self) -> None:
         venue = _StubVenue([[{"id": "f", "symbol": "AAPL", "side": "buy",
@@ -363,14 +399,17 @@ class TestFills:
         """A poll overlapping a previous window must not double the position."""
         from axiom.store import Store
 
-        row = {"id": "fill-1", "symbol": "AAPL", "side": "buy", "qty": "5",
-               "price": "150", "transaction_time": "2026-01-01T15:00:00Z"}
+        row = {"id": "fill-1", "order_id": "o-1", "symbol": "AAPL",
+               "side": "buy", "qty": "5", "price": "150",
+               "transaction_time": "2026-01-01T15:00:00Z"}
         venue = _StubVenue([[row], [row]])
         with Store(":memory:") as store:
             order_id, _ = store.record_order(_order(), "k", T0)
             for _ in range(2):
-                for venue_id, fill in venue.fills_since(T0):
-                    store.record_fill(order_id, fill, venue_id)
+                for venue_fill in venue.fills_since(T0):
+                    store.record_fill(
+                        order_id, venue_fill.fill, venue_fill.venue_fill_id
+                    )
             assert store.positions()["AAPL"] == pytest.approx(5.0)
 
 
@@ -400,6 +439,7 @@ class TestErrorMessages:
             (401, "APCA_API_KEY_ID"),
             (403, "paper keys do not work live"),
             (422, "already exists"),
+            (422, "page size"),
             (429, "rate limited"),
         ],
     )

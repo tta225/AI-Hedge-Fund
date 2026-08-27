@@ -782,6 +782,51 @@ def venue_check(
         raise typer.Exit(1)
 
 
+@app.command("poll-fills")
+def poll_fills(
+    db: str = typer.Option("data/desk.db", help="Desk database."),
+    live: bool = typer.Option(False, help="Poll the LIVE account instead of paper."),
+    reconcile: bool = typer.Option(
+        True, help="Reconcile against the broker after booking."
+    ),
+) -> None:
+    """Book executions from the broker into the store, exactly once each.
+
+    The desk records what it sent; this records what happened. Without it the
+    position book drifts from the broker the moment anything fills, and
+    reconciliation correctly halts trading. Run it on a schedule alongside the
+    desk loop, or by hand after a session.
+    """
+    from axiom.desk.fills import FillPoller
+    from axiom.execution.alpaca import AlpacaVenue
+    from axiom.store import Store, reconcile_positions
+
+    venue = AlpacaVenue(paper=not live)
+    with Store(db) as store:
+        outcome = FillPoller(venue, store).poll()
+        console.print(outcome.render())
+        if outcome.error:
+            raise typer.Exit(1)
+        if outcome.unattributed:
+            console.print(
+                "[yellow]Unattributed fills were booked with no order link. "
+                "Bracket legs and manual trades land here legitimately; "
+                "anything else is worth explaining.[/yellow]"
+            )
+            for label in outcome.unattributed:
+                console.print(f"  {label}")
+
+        if not reconcile:
+            return
+        result = reconcile_positions(store.positions(), venue.positions())
+        console.print()
+        if result.is_clean:
+            console.print(f"[green]{result.render()}[/green]")
+        else:
+            console.print(f"[red]{result.render()}[/red]")
+            raise typer.Exit(1)
+
+
 def main() -> None:
     app()
 

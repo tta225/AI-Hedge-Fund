@@ -862,6 +862,114 @@ def desk_health(
     raise typer.Exit(report.exit_code)
 
 
+@app.command("desk-run")
+def desk_run(
+    strategy: str = typer.Option("sweep-continuation", help=f"One of: {', '.join(STRATEGIES)}"),
+    symbol: str = typer.Option("BTC-USD"),
+    timeframe: str = typer.Option("1h"),
+    db: str = typer.Option("data/desk.db"),
+    cycles: int = typer.Option(1, help="Cycles to run. 0 runs until stopped."),
+    interval: float = typer.Option(60.0, help="Seconds between cycles."),
+    dry_run: bool = typer.Option(True, help="Record everything, send nothing."),
+    live: bool = typer.Option(False, help="Use the LIVE account instead of paper."),
+) -> None:
+    """Run the desk supervisor: poll fills, reconcile, decide, report.
+
+    Defaults to a single dry-run cycle, because the first thing anyone should
+    do with a trading loop is watch one iteration without it sending anything.
+    Pass --no-dry-run to arm it and --cycles 0 to run until stopped.
+    """
+    import pandas as pd
+
+    from axiom.data.registry import default_registry
+    from axiom.desk.calendar import AlwaysOpen, RegularHours
+    from axiom.desk.fills import FillPoller
+    from axiom.desk.runner import DeskConfig, DeskRunner
+    from axiom.desk.supervisor import Supervisor
+    from axiom.execution.alpaca import AlpacaVenue
+    from axiom.ict.engine import ICTEngine
+    from axiom.ops import setup_logging
+    from axiom.store import Store
+    from axiom.strategy.base import StrategyContext
+
+    if strategy not in STRATEGIES:
+        console.print(f"[red]Unknown strategy. One of: {', '.join(STRATEGIES)}[/red]")
+        raise typer.Exit(1)
+    if live and dry_run:
+        console.print("[yellow]--live with --dry-run sends nothing. That is fine.[/yellow]")
+
+    setup_logging()
+    instrument = get_instrument(symbol)
+    venue = AlpacaVenue(paper=not live)
+    built = STRATEGIES[strategy]()
+
+    def context_factory() -> StrategyContext | None:
+        """Fetch the newest bars and build a context, or None if unavailable."""
+        try:
+            series = default_registry().fetch_bars(
+                BarRequest.lookback(instrument, timeframe, days=30)
+            )
+        except ProviderError as exc:
+            console.print(f"[yellow]no data: {exc}[/yellow]")
+            return None
+        last = len(series) - 1
+        state = (
+            ICTEngine().analyse(series)
+            if built.requires_ict
+            else ICTEngine().analyse(series.tail(2))
+        )
+        return StrategyContext(
+            series=series,
+            index=last,
+            ict=state,
+            portfolio=portfolio,
+            timestamp=series.index[last],
+        )
+
+    settings = get_settings()
+    portfolio = Portfolio(starting_cash=settings.risk.account_equity)
+
+    with Store(db) as store:
+        runner = DeskRunner(
+            strategy=built,
+            venue=venue,
+            store=store,
+            risk=RiskManager(settings.risk),
+            portfolio=portfolio,
+            config=DeskConfig(
+                expected_interval=pd.Timedelta(
+                    seconds=Timeframe.parse(timeframe).seconds
+                ),
+                dry_run=dry_run,
+            ),
+            broker_positions=venue.positions,
+        )
+        calendar = (
+            AlwaysOpen()
+            if instrument.asset_class.value == "crypto"
+            else RegularHours.us_equities()
+        )
+        supervisor = Supervisor(
+            runner=runner,
+            store=store,
+            context_factory=context_factory,
+            poller=FillPoller(venue, store),
+            is_open=calendar.is_open,
+            interval=interval,
+        )
+        if cycles == 0:
+            supervisor.install_signal_handlers()
+            console.print("[bold]Running until stopped (SIGINT/SIGTERM).[/bold]")
+
+        mode = "DRY RUN" if dry_run else ("[red]LIVE[/red]" if live else "PAPER")
+        console.print(
+            f"{mode} | {built.name} on {symbol} {timeframe} | "
+            f"calendar {calendar.__class__.__name__}"
+        )
+        for outcome in supervisor.run(max_cycles=None if cycles == 0 else cycles):
+            console.print(outcome.render())
+
+
 def main() -> None:
     app()
 

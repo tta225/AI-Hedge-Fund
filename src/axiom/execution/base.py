@@ -109,6 +109,15 @@ class ExecutionVenue(ABC):
     name: str = "venue"
     #: True when this venue can move real money. Guarded by the router.
     is_live: bool = False
+    #: True when the venue itself will hold a protective stop after the entry
+    #: fills, rather than relying on this process to watch the price.
+    #:
+    #: The distinction is the difference between a bounded and an unbounded
+    #: loss. A stop that lives in the trading process disappears during a
+    #: restart, a network partition, or a crash — precisely the moments a stop
+    #: is needed. A desk configured with ``require_brackets`` refuses to send
+    #: entries to a venue that declares False here.
+    supports_brackets: bool = True
 
     @abstractmethod
     def submit(self, order: Order, timestamp: pd.Timestamp) -> Order:

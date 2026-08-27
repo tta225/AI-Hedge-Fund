@@ -39,6 +39,7 @@ from axiom.alpha.panel import Panel
 from axiom.core.types import Instrument, OrderStatus, Side
 from axiom.desk.guards import GuardReport, check_guards
 from axiom.execution.base import ExecutionError, ExecutionVenue, Order
+from axiom.ops.logs import correlation_id, log_event
 from axiom.portfolio.positions import Portfolio
 from axiom.portfolio.risk import PortfolioRiskManager
 from axiom.risk.manager import RiskManager
@@ -212,7 +213,17 @@ class DeskRunner:
     # --- the loop ---------------------------------------------------------
 
     def tick(self, context: StrategyContext, now: pd.Timestamp | None = None) -> TickOutcome:
-        """One decision: check, ask, size, record, send."""
+        """One decision: check, ask, size, record, send.
+
+        The whole tick runs under one correlation id, so the guard that
+        passed, the size that was chosen and the order that carried it can be
+        pulled out of a log as a single causal chain rather than grepped for by
+        symbol and hoped over.
+        """
+        with correlation_id():
+            return self._tick(context, now)
+
+    def _tick(self, context: StrategyContext, now: pd.Timestamp | None) -> TickOutcome:
         moment = pd.Timestamp(now) if now is not None else context.timestamp
         equity = self.portfolio.equity
         self._peak_equity = max(self._peak_equity, equity)
@@ -233,6 +244,10 @@ class DeskRunner:
 
         if not guards.may_trade:
             outcome.halted_for = "; ".join(guards.blocking)
+            log_event(
+                logger, "guards_blocked", level=logging.WARNING,
+                symbol=context.instrument.symbol, reason=outcome.halted_for,
+            )
             self._halt_once(moment, outcome.halted_for)
             return outcome
 
@@ -395,6 +410,13 @@ class DeskRunner:
 
         self.store.attach_venue_id(order_id, str(submitted.order_id))
         self.store.record_status(order_id, submitted.status, timestamp, "submitted")
+        log_event(
+            logger, "order_submitted",
+            order_id=order_id, venue_order_id=str(submitted.order_id),
+            symbol=order.instrument.symbol, side=order.side.value,
+            quantity=order.quantity, stop_loss=order.stop_loss,
+            take_profit=order.take_profit, strategy=order.strategy,
+        )
         return True
 
     @staticmethod

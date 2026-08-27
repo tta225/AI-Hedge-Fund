@@ -41,8 +41,16 @@ from axiom.store.db import Store
 
 logger = logging.getLogger(__name__)
 
-#: Store key holding the poll watermark.
+#: Store key holding the position in the fill stream — the transaction time of
+#: the newest fill seen. This is *not* when the last poll ran.
 WATERMARK_KEY = "fills_watermark_us"
+#: Store key holding when a poll last succeeded, in wall-clock terms.
+#:
+#: Kept separate from the watermark because the two answer different questions
+#: and conflating them misreads a healthy quiet desk as a broken one: a desk
+#: polling every minute with no new fills has a watermark days old and is
+#: working perfectly.
+LAST_POLL_KEY = "fills_last_poll_us"
 #: How far to rewind the watermark before each poll. Generous, because the
 #: deduplication makes an over-large overlap cost only bandwidth while an
 #: under-large one costs a lost fill.
@@ -182,6 +190,10 @@ class FillPoller:
         # this point re-reads the window; a crash after it would have lost it.
         outcome.watermark = latest
         self.store.set_meta(WATERMARK_KEY, str(_to_us(latest)))
+        # Written only on success, so a run of failed polls is visible as a
+        # stale liveness timestamp rather than being hidden by a watermark
+        # that legitimately does not move on a quiet day.
+        self.store.set_meta(LAST_POLL_KEY, str(_to_us(moment)))
         return outcome
 
     def _resolve(self, venue_fill: VenueFill, outcome: PollOutcome) -> int | None:

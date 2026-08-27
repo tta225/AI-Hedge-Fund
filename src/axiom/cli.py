@@ -827,6 +827,41 @@ def poll_fills(
             raise typer.Exit(1)
 
 
+@app.command("desk-health")
+def desk_health(
+    db: str = typer.Option("data/desk.db", help="Desk database."),
+    alert: bool = typer.Option(False, help="Emit alerts for anything failing."),
+) -> None:
+    """Is the desk alive, and is what it believes still current?
+
+    Answered from the database alone, so a watchdog needs no access to the
+    running process — a wedged desk answers "fine" or does not answer at all,
+    and both look like a network problem from outside.
+
+    Exits 0 healthy, 1 degraded, 2 down, for use in a cron or a supervisor.
+    """
+    from axiom.ops import check_health
+    from axiom.ops.alerts import AlertRouter, alerts_for_health
+    from axiom.store import Store
+
+    if not Path(db).exists():
+        console.print(f"[red]No desk database at {db}[/red]")
+        raise typer.Exit(2)
+
+    with Store(db) as store:
+        report = check_health(store)
+
+    colour = {"ok": "green", "degraded": "yellow", "down": "red"}[report.status.value]
+    console.print(f"[{colour}]{report.render()}[/{colour}]")
+
+    if alert:
+        router = AlertRouter()
+        for item in alerts_for_health(report):
+            router.send(item)
+
+    raise typer.Exit(report.exit_code)
+
+
 def main() -> None:
     app()
 

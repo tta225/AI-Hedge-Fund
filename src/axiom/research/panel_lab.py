@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
@@ -49,6 +50,13 @@ from axiom.alpha.base import AlphaAgent
 from axiom.alpha.ensemble import AlphaEnsemble
 from axiom.alpha.panel import Panel
 from axiom.core.provenance import Provenance
+from axiom.execution.costs import (
+    CostModel,
+    FlatBpsCost,
+    SpreadImpactCost,
+    average_dollar_volume,
+    trailing_volatility,
+)
 from axiom.portfolio.risk import periods_per_year
 from axiom.research.reference import PlausibilityCheck, assess_plausibility
 from axiom.research.statistics import (
@@ -56,6 +64,12 @@ from axiom.research.statistics import (
     deflated_sharpe_ratio,
     expected_max_sharpe,
     probability_of_backtest_overfitting,
+)
+from axiom.research.turnover import (
+    HysteresisBands,
+    hysteresis_weights,
+    partial_rebalance,
+    suppress_small_trades,
 )
 
 #: Round-trip cost per unit of notional traded. 10 bp is deliberately
@@ -188,6 +202,11 @@ def backtest_panel(
     top_fraction: float = 0.2,
     gross: float = 1.0,
     phase: int = 0,
+    cost_model: CostModel | None = None,
+    aum: float = 10_000_000.0,
+    bands: HysteresisBands | None = None,
+    rebalance_fraction: float = 1.0,
+    min_trade: float = 0.0,
 ) -> PanelBacktestResult:
     """Run a cross-sectional book over ``panel`` from ``start``.
 
@@ -216,6 +235,7 @@ def backtest_panel(
     ensemble = (
         agents if isinstance(agents, AlphaEnsemble) else AlphaEnsemble(list(agents))
     )
+    model: CostModel = cost_model if cost_model is not None else FlatBpsCost(cost_bps)
     stop = len(panel) - 1 if end is None else min(end, len(panel) - 1)
     if start < 1 or start >= stop:
         raise ValueError(f"start {start} and end {stop} do not enclose any bars")
@@ -243,21 +263,48 @@ def backtest_panel(
                     periods_per_year=factor,
                     error=f"{type(exc).__name__} at bar {i}: {exc}",
                 )
-            target = rank_to_weights(
-                {v.symbol: v.conviction for v in views},
-                panel.symbols,
-                long_short=long_short,
-                top_fraction=top_fraction,
-                gross=gross,
-            )
+            scores = {v.symbol: v.conviction for v in views}
+            if bands is None:
+                target = rank_to_weights(
+                    scores,
+                    panel.symbols,
+                    long_short=long_short,
+                    top_fraction=top_fraction,
+                    gross=gross,
+                )
+            else:
+                target = hysteresis_weights(
+                    scores,
+                    panel.symbols,
+                    weights,
+                    bands=bands,
+                    gross=gross,
+                    long_short=long_short,
+                )
+            if rebalance_fraction < 1.0:
+                target = partial_rebalance(weights, target, rebalance_fraction)
+            if min_trade > 0.0:
+                target = suppress_small_trades(weights, target, min_trade)
+
             if not np.any(target):
                 skipped += 1
             else:
                 rebalances += 1
-            traded = float(np.abs(target - weights).sum())
+
+            deltas = target - weights
+            traded = float(np.abs(deltas).sum())
+            # Priced before the weights move, so the charge reflects the trade
+            # that was actually required rather than the book that resulted.
+            cost = model.charge(
+                deltas,
+                aum=aum,
+                adv_notional=average_dollar_volume(panel.closes, panel.volumes, i),
+                volatility=trailing_volatility(panel.closes, i),
+            )
             weights = target
         else:
             traded = 0.0
+            cost = 0.0
 
         # The return from i to i+1, earned by weights formed from data before
         # i. One bar later and this would be the return the ranking was
@@ -269,7 +316,6 @@ def backtest_panel(
         step = np.nan_to_num(step, nan=0.0, posinf=0.0, neginf=0.0)
 
         gross_return = float(weights @ step)
-        cost = traded * cost_bps / 10_000.0
         returns.append(gross_return - cost)
         turnovers.append(traded)
 
@@ -280,6 +326,35 @@ def backtest_panel(
         n_rebalances=rebalances,
         skipped=skipped,
     )
+
+
+def capacity_curve(
+    agents: Sequence[AlphaAgent] | AlphaEnsemble,
+    panel: Panel,
+    *,
+    aums: Sequence[float],
+    start: int,
+    cost_model: CostModel | None = None,
+    **kwargs: Any,
+) -> dict[float, PanelBacktestResult]:
+    """Run the same book at several capital levels.
+
+    The question a flat cost model cannot ask. Impact scales with the square
+    root of participation, so a strategy's Sharpe is a *decreasing function of
+    the money in it* — and the interesting number is not the Sharpe at any one
+    size but the size at which it crosses zero.
+
+    Uses :class:`~axiom.execution.costs.SpreadImpactCost` by default, because a
+    capacity curve computed with a size-independent cost model is a flat line
+    and answers nothing.
+    """
+    model = cost_model if cost_model is not None else SpreadImpactCost()
+    return {
+        float(aum): backtest_panel(
+            agents, panel, start=start, cost_model=model, aum=float(aum), **kwargs
+        )
+        for aum in aums
+    }
 
 
 @dataclass(slots=True)
@@ -445,6 +520,9 @@ class PanelLab:
         cost_bps: float = DEFAULT_COST_BPS,
         long_short: bool = True,
         top_fraction: float = 0.2,
+        cost_model: CostModel | None = None,
+        aum: float = 10_000_000.0,
+        bands: HysteresisBands | None = None,
     ) -> None:
         if n_folds < 2:
             raise ValueError("n_folds must be at least 2")
@@ -454,6 +532,11 @@ class PanelLab:
         self.cost_bps = cost_bps
         self.long_short = long_short
         self.top_fraction = top_fraction
+        # Defaults preserve the flat charge, so an existing caller's numbers do
+        # not move silently when a better model becomes available.
+        self.cost_model = cost_model
+        self.aum = aum
+        self.bands = bands
 
     def search(
         self, panel: Panel, candidates: Iterable[PanelCandidate]
@@ -500,8 +583,20 @@ class PanelLab:
             notes=[
                 f"Walk-forward: {self.n_folds} anchored folds, "
                 f"{self.warmup}-bar warm-up, test windows only.",
-                f"Costs: {self.cost_bps:.1f} bp per unit of notional traded, "
-                f"rebalanced every {self.rebalance_every} bars.",
+                "Costs: "
+                + (
+                    self.cost_model.describe()  # type: ignore[attr-defined]
+                    if self.cost_model is not None
+                    else f"flat {self.cost_bps:.1f} bp per unit traded"
+                )
+                + f", rebalanced every {self.rebalance_every} bars"
+                + (
+                    f", hysteresis {self.bands.entry_fraction:.0%}/"
+                    f"{self.bands.exit_fraction:.0%}"
+                    if self.bands is not None
+                    else ", no hysteresis"
+                )
+                + ".",
                 "Book is dollar-neutral long-short, equal-weighted within each "
                 "leg — conviction magnitudes are not comparable across agents.",
                 f"All {len(candidates)} candidates counted as trials.",
@@ -530,6 +625,9 @@ class PanelLab:
                 cost_bps=self.cost_bps,
                 long_short=self.long_short,
                 top_fraction=candidate.top_fraction or self.top_fraction,
+                cost_model=self.cost_model,
+                aum=self.aum,
+                bands=self.bands,
             )
             if outcome.error:
                 return PanelCandidateResult(

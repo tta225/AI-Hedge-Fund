@@ -41,7 +41,7 @@ import pandas as pd
 from axiom.core.types import Instrument, OrderStatus, Side, get_instrument
 from axiom.execution.base import Fill, Order
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta (
@@ -63,7 +63,20 @@ CREATE TABLE IF NOT EXISTS orders (
     take_profit        REAL,
     strategy           TEXT    NOT NULL DEFAULT '',
     tag                TEXT    NOT NULL DEFAULT '',
-    created_us         INTEGER NOT NULL
+    created_us         INTEGER NOT NULL,
+    -- The price the signal was scored against, and the liquidity conditions it
+    -- was scored under. Written at decision time because they cannot be
+    -- recovered afterwards: reconstructing "what did the book look like when we
+    -- decided" from a historical bar is precisely the lookahead that makes a
+    -- transaction cost study agree with whatever it set out to prove.
+    reference_price    REAL,
+    decision_adv       REAL,
+    decision_volatility REAL,
+    -- The contract multiplier, so notional can be reconstructed later. Without
+    -- it a futures fill reads as its share-equivalent and every cost expressed
+    -- in basis points of notional is wrong by the multiplier.
+    asset_class        TEXT,
+    point_value        REAL
 );
 CREATE INDEX IF NOT EXISTS orders_created ON orders (created_us);
 CREATE INDEX IF NOT EXISTS orders_symbol  ON orders (symbol);
@@ -235,6 +248,24 @@ class Store:
                 )
             found = 2
 
+        if found == 2:
+            # v3 records what the decision looked like, so realised cost can be
+            # compared against the cost model that authorised the trade. Plain
+            # ALTERs: the columns are nullable, so every existing order keeps
+            # its meaning — "we did not write this down" rather than a zero
+            # that would read as a free trade.
+            with self._write() as connection:
+                for column, kind in (
+                    ("reference_price", "REAL"),
+                    ("decision_adv", "REAL"),
+                    ("decision_volatility", "REAL"),
+                    ("asset_class", "TEXT"),
+                    ("point_value", "REAL"),
+                ):
+                    connection.execute(f"ALTER TABLE orders ADD COLUMN {column} {kind}")
+                connection.execute("UPDATE meta SET value = '3' WHERE key = 'schema_version'")
+            found = 3
+
     def _check_schema_version(self) -> None:
         row = self._connection.execute(
             "SELECT value FROM meta WHERE key = 'schema_version'"
@@ -263,6 +294,18 @@ class Store:
         with self._lock:
             self._connection.close()
 
+    def snapshot_into(self, destination: sqlite3.Connection) -> None:
+        """Copy this database into ``destination`` while it is still in use.
+
+        SQLite's online backup API rather than a file copy: in WAL mode the
+        most recent committed transactions live in the ``-wal`` sidecar until a
+        checkpoint, so copying the ``.db`` alone silently omits exactly the
+        writes an incident would be about. Held under the store's own lock so
+        the snapshot cannot interleave with a write from the desk loop.
+        """
+        with self._lock:
+            self._connection.backup(destination)
+
     def __enter__(self) -> Store:
         return self
 
@@ -272,7 +315,13 @@ class Store:
     # --- orders -----------------------------------------------------------
 
     def record_order(
-        self, order: Order, idempotency_key: str, timestamp: pd.Timestamp
+        self,
+        order: Order,
+        idempotency_key: str,
+        timestamp: pd.Timestamp,
+        *,
+        decision_adv: float | None = None,
+        decision_volatility: float | None = None,
     ) -> tuple[int, bool]:
         """Persist an order before it is sent. Returns ``(id, was_new)``.
 
@@ -299,8 +348,10 @@ class Store:
                 """INSERT INTO orders (
                        idempotency_key, venue_order_id, symbol, side, quantity,
                        order_type, limit_price, stop_price, stop_loss,
-                       take_profit, strategy, tag, created_us
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       take_profit, strategy, tag, created_us,
+                       reference_price, decision_adv, decision_volatility,
+                       asset_class, point_value
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     idempotency_key,
                     None,
@@ -315,6 +366,11 @@ class Store:
                     order.strategy,
                     order.tag,
                     _to_us(timestamp),
+                    order.reference_price,
+                    decision_adv,
+                    decision_volatility,
+                    order.instrument.asset_class.value,
+                    float(order.instrument.point_value),
                 ),
             )
             order_id = int(cursor.lastrowid or 0)
@@ -495,6 +551,31 @@ class Store:
         query += " ORDER BY at_us DESC LIMIT ?"
         params += (limit,)
         return [dict(row) for row in self._connection.execute(query, params).fetchall()]
+
+    def fills_with_decisions(self, limit: int = 5000) -> list[dict[str, Any]]:
+        """Fills joined to the decision context of the order that caused them.
+
+        An INNER join, deliberately. A fill with no linked order — a bracket
+        leg, a manual trade, an unattributed execution booked by the poller —
+        has no decision price, and there is no honest way to invent one.
+        Substituting the fill's own price would report zero cost for precisely
+        the executions nobody was supervising, which is the direction a cost
+        study must never be wrong in.
+
+        Rows with a NULL ``reference_price`` are returned rather than filtered,
+        so a caller can see how much of its history predates v3 instead of
+        quietly analysing a shrinking sample.
+        """
+        rows = self._connection.execute(
+            """SELECT f.*, o.reference_price, o.decision_adv, o.decision_volatility,
+                      o.asset_class, o.point_value, o.strategy AS order_strategy
+               FROM fills f
+               JOIN orders o ON o.id = f.order_id
+               ORDER BY f.at_us DESC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     # --- equity and halts -------------------------------------------------
 

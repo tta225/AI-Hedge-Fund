@@ -37,9 +37,23 @@ import pandas as pd
 
 from axiom.alpha.panel import Panel
 from axiom.core.types import Instrument, OrderStatus, Side
+from axiom.desk.compliance import ComplianceEngine
+from axiom.desk.compliance import Context as ComplianceContext
 from axiom.desk.guards import GuardReport, check_guards
 from axiom.execution.base import ExecutionError, ExecutionVenue, Order
 from axiom.ops.logs import correlation_id, log_event
+from axiom.ops.metrics import (
+    EQUITY,
+    GROSS_EXPOSURE,
+    HALTS,
+    IS_HALTED,
+    OPEN_POSITIONS,
+    ORDERS_REJECTED,
+    ORDERS_SENT,
+    SIGNALS_BLOCKED,
+    SIGNALS_GENERATED,
+    TICK_SECONDS,
+)
 from axiom.portfolio.positions import Portfolio
 from axiom.portfolio.risk import PortfolioRiskManager
 from axiom.risk.manager import RiskManager
@@ -129,6 +143,7 @@ class DeskRunner:
         broker_positions: Callable[[], Mapping[str, float]] | None = None,
         portfolio_risk: PortfolioRiskManager | None = None,
         risk_panel: Panel | None = None,
+        compliance: ComplianceEngine | None = None,
     ) -> None:
         self.strategy = strategy
         self.venue = venue
@@ -150,6 +165,11 @@ class DeskRunner:
             )
         self.portfolio_risk = portfolio_risk
         self.risk_panel = risk_panel
+        # Defaults to an empty engine rather than to a set of limits. Silently
+        # imposing position caps a caller did not ask for would block orders
+        # for reasons that appear nowhere in their configuration; an empty
+        # engine says so in `describe()`.
+        self.compliance = compliance or ComplianceEngine()
         self._peak_equity = 0.0
 
     # --- startup ----------------------------------------------------------
@@ -220,14 +240,40 @@ class DeskRunner:
         pulled out of a log as a single causal chain rather than grepped for by
         symbol and hoped over.
         """
-        with correlation_id():
+        with correlation_id(), TICK_SECONDS.time(strategy=self.strategy.name):
             return self._tick(context, now)
+
+    def _compliance_context(self) -> ComplianceContext:
+        """The account snapshot every rule sees, taken once.
+
+        Positions come from the portfolio rather than the store because the
+        portfolio is what sizing just used; a compliance check against a
+        different position book than the sizer used would block or permit for
+        reasons the sizer cannot see.
+        """
+        positions = {
+            symbol: position.quantity
+            for symbol, position in self.portfolio.positions.items()
+        }
+        prices = {
+            symbol: position.last_price
+            for symbol, position in self.portfolio.positions.items()
+            if position.last_price
+        }
+        return ComplianceContext(
+            equity=self.portfolio.equity, positions=positions, prices=prices
+        )
 
     def _tick(self, context: StrategyContext, now: pd.Timestamp | None) -> TickOutcome:
         moment = pd.Timestamp(now) if now is not None else context.timestamp
         equity = self.portfolio.equity
         self._peak_equity = max(self._peak_equity, equity)
         self.store.record_equity(moment, equity, self.portfolio.cash)
+
+        open_positions = [p for p in self.portfolio.positions.values() if not p.is_flat]
+        EQUITY.set(equity)
+        OPEN_POSITIONS.set(len(open_positions))
+        GROSS_EXPOSURE.set(sum(abs(p.exposure) for p in open_positions))
 
         reconciliation = self.reconcile(moment)
         guards = check_guards(
@@ -242,8 +288,10 @@ class DeskRunner:
         )
         outcome = TickOutcome(at=moment, guards=guards, reconciliation=reconciliation)
 
+        IS_HALTED.set(0.0 if guards.may_trade else 1.0)
         if not guards.may_trade:
             outcome.halted_for = "; ".join(guards.blocking)
+            HALTS.inc()
             log_event(
                 logger, "guards_blocked", level=logging.WARNING,
                 symbol=context.instrument.symbol, reason=outcome.halted_for,
@@ -255,6 +303,7 @@ class DeskRunner:
         if signal is None:
             return outcome
         outcome.signals = 1
+        SIGNALS_GENERATED.inc(strategy=self.strategy.name)
 
         order = self._size(signal, context, outcome)
         if order is None:
@@ -381,6 +430,23 @@ class DeskRunner:
             )
             return False
 
+        # Compliance runs before the order is recorded, not after. A blocked
+        # order is one that was never permitted to exist, and writing it into
+        # the order log first would leave a row that reconciliation has to
+        # explain away on every subsequent startup.
+        decision = self.compliance.check(order, self._compliance_context())
+        if not decision.allowed:
+            SIGNALS_BLOCKED.inc(len(decision.breaches), reason="compliance")
+            outcome.rejected.append(f"compliance: {decision.reason}")
+            log_event(
+                logger, "order_blocked",
+                symbol=order.instrument.symbol, side=order.side.value,
+                quantity=order.quantity, strategy=order.strategy,
+                rules=[breach.rule for breach in decision.breaches],
+                detail=decision.reason,
+            )
+            return False
+
         key = self._idempotency_key(order, timestamp)
         # Carried on the order so a venue that supports client-side order ids
         # can enforce the same guarantee. Alpaca rejects a duplicate outright,
@@ -405,11 +471,13 @@ class DeskRunner:
             # venue id. That is the intended residue: reconciliation will
             # surface it, rather than the order vanishing.
             self.store.record_status(order_id, OrderStatus.REJECTED, timestamp, str(exc))
+            ORDERS_REJECTED.inc(venue=self.venue.name)
             outcome.rejected.append(f"venue rejected: {exc}")
             return False
 
         self.store.attach_venue_id(order_id, str(submitted.order_id))
         self.store.record_status(order_id, submitted.status, timestamp, "submitted")
+        ORDERS_SENT.inc(venue=self.venue.name, strategy=order.strategy or "unattributed")
         log_event(
             logger, "order_submitted",
             order_id=order_id, venue_order_id=str(submitted.order_id),

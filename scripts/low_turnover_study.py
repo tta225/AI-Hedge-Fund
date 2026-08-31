@@ -100,7 +100,7 @@ def candidates() -> list[PanelCandidate]:
         for skip in (21, 0):
             add(
                 "mom12_1",
-                lambda s=skip: [LongHorizonMomentum({"lookback": 252, "skip": s})],  # type: ignore[misc]
+                lambda s=skip: [LongHorizonMomentum({"lookback": 252, "skip": s})],
                 {"skip": skip},
                 rebalance,
             )
@@ -154,14 +154,14 @@ def turnover_profile(panel: Any, aum: float) -> dict[str, Any]:
     ]
     rows: dict[str, Any] = {}
     for label, agents, rebalance in families:
-        common = {
+        common: dict[str, Any] = {
             "start": WARMUP,
             "rebalance_every": rebalance,
             "top_fraction": TOP_FRACTION,
             "bands": BANDS,
         }
-        net = backtest_panel(agents, panel, cost_model=model, aum=aum, **common)  # type: ignore[arg-type]
-        gross = backtest_panel(agents, panel, cost_model=FlatBpsCost(0.0), **common)  # type: ignore[arg-type]
+        net = backtest_panel(agents, panel, cost_model=model, aum=aum, **common)
+        gross = backtest_panel(agents, panel, cost_model=FlatBpsCost(0.0), **common)
         cost_pct = (gross.returns.mean() - net.returns.mean()) * net.periods_per_year * 100
         rows[label] = {
             "turnover": net.annual_turnover,

@@ -83,7 +83,11 @@ strict = true
 warn_unreachable = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
-files = ["src/axiom"]
+# scripts/ is checked too. It was not, and that is how a parameter named
+# `batch` came to shadow a local dict of the same name inside its own loop —
+# a crash on the second iteration that no test covered, because these are
+# research entry points nothing imports.
+files = ["src/axiom", "scripts"]
 
 # Optional extras are not installed in the default dev environment, so their
 # symbols resolve to Any and every construct built on them looks untyped.

@@ -128,6 +128,7 @@ def fetch_bars(
     end: str,
     feed: str,
     checkpoint_dir: Path | None = None,
+    batch_size: int = BATCH,
 ) -> dict[str, list[dict[str, Any]]]:
     """Daily bars for many symbols, paged, batched, and resumable.
 
@@ -141,8 +142,8 @@ def fetch_bars(
     if checkpoint_dir is not None:
         checkpoint_dir.mkdir(parents=True, exist_ok=True)
 
-    for offset in range(0, len(symbols), BATCH):
-        chunk = symbols[offset : offset + BATCH]
+    for offset in range(0, len(symbols), batch_size):
+        chunk = symbols[offset : offset + batch_size]
         shard = checkpoint_dir / f"batch-{offset:06d}.json" if checkpoint_dir else None
 
         if shard is not None and shard.exists():
@@ -195,7 +196,7 @@ def fetch_bars(
         for symbol, bars in batch.items():
             out.setdefault(symbol, []).extend(bars)
 
-        done = min(offset + BATCH, len(symbols))
+        done = min(offset + batch_size, len(symbols))
         print(f"    {done:,}/{len(symbols):,} symbols, {len(out):,} with bars")
         time.sleep(PAUSE)
     return out
@@ -246,7 +247,7 @@ def main() -> None:
     assets = fetch_assets(headers)
     active = {a["symbol"] for a in assets if a.get("status") == "active"}
     exchanges = {a["symbol"]: a.get("exchange", "") for a in assets}
-    symbols = {a["symbol"] for a in assets}
+    universe_symbols: set[str] = {a["symbol"] for a in assets}
 
     # Alpaca purges the asset record of some delisted names while still serving
     # their bars — Silicon Valley Bank, First Republic, Twitter, VMware and
@@ -254,6 +255,7 @@ def main() -> None:
     # are exactly the large-cap failures whose absence flatters a backtest
     # most, so they are supplied by name.
     supplement = Path(args.supplement)
+    extra: set[str] = set()
     if supplement.exists():
         extra = {
             token
@@ -261,17 +263,35 @@ def main() -> None:
             if not line.startswith("#")
             for token in line.split()
         }
-        new = extra - symbols
-        symbols |= extra
+        new = extra - universe_symbols
+        universe_symbols |= extra
         print(f"  supplement: {len(extra)} tickers, {len(new)} not in the asset list")
 
-    symbols = sorted(symbols)
+    symbols: list[str] = sorted(universe_symbols)
     if args.limit:
         symbols = symbols[: args.limit]
 
     print(f"\nBars for {len(symbols):,} symbols ({args.start} -> {args.end}, {args.feed}):")
     checkpoints = out / "_batches" if args.resume else None
     bars = fetch_bars(symbols, headers, args.start, args.end, args.feed, checkpoints)
+
+    # The API rejects a whole batch when one symbol in it is bad, and does not
+    # say which, so a 400 costs up to BATCH names. That is tolerable for the
+    # bulk of the universe and not for the supplement, whose entire purpose is
+    # to supply the large-cap failures the asset endpoint omits — losing SIVB
+    # to an unrelated bad ticker would silently undo the correction. They are
+    # retried in small batches, where one bad symbol costs a handful.
+    if extra:
+        rescued = sorted(s for s in extra if s not in bars)
+        if rescued:
+            print(f"\nRetrying {len(rescued)} supplement symbol(s) in small batches:")
+            recovered = fetch_bars(
+                rescued, headers, args.start, args.end, args.feed,
+                out / "_supplement" if args.resume else None, batch_size=10,
+            )
+            bars.update(recovered)
+            still_missing = sorted(s for s in extra if s not in bars)
+            print(f"  recovered {len(recovered)}; still missing: {still_missing or 'none'}")
 
     closes, volumes = to_frames(bars)
     print(f"\nMatrix: {closes.shape[0]:,} bars x {closes.shape[1]:,} symbols")

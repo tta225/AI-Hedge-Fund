@@ -93,7 +93,7 @@ def candidates() -> list[PanelCandidate]:
             out.append(
                 PanelCandidate(
                     name="reversal",
-                    factory=lambda lb=lookback: [  # type: ignore[misc]
+                    factory=lambda lb=lookback: [  # type: ignore[misc,arg-type]
                         _Inverted(MomentumAgent({"lookback": lb}))
                     ],
                     params={"lookback": lookback, "rebal": rebalance},

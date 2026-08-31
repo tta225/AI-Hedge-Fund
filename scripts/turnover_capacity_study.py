@@ -45,6 +45,7 @@ import numpy as np
 from axiom.alpha.agents import MomentumAgent
 from axiom.execution.costs import (
     PARTICIPATION_WARN,
+    CostModel,
     FlatBpsCost,
     SpreadImpactCost,
     average_dollar_volume,
@@ -68,7 +69,7 @@ def cost_model_comparison(panel: Any, aum: float) -> dict[str, Any]:
     """The same book priced two ways."""
     print(f"{'=' * 78}\n1. COST MODEL — same book, two models, ${aum:,.0f}\n{'=' * 78}")
     rows: dict[str, Any] = {}
-    models = {
+    models: dict[str, CostModel] = {
         "flat 10bp": FlatBpsCost(10.0),
         "flat 5bp": FlatBpsCost(5.0),
         "impact": SpreadImpactCost(),
@@ -117,15 +118,15 @@ def turnover_grid(panel: Any, aum: float) -> dict[str, Any]:
         ("buffer .1/.3, rebal 5", HysteresisBands(0.1, 0.3), 5),
     ]
     for label, bands, rebalance in configs:
-        common = {
+        common: dict[str, Any] = {
             "start": WARMUP, "rebalance_every": rebalance,
             "top_fraction": TOP_FRACTION, "bands": bands,
         }
         net = backtest_panel(
-            _agents(), panel, cost_model=model, aum=aum, **common  # type: ignore[arg-type]
+            _agents(), panel, cost_model=model, aum=aum, **common
         )
         gross = backtest_panel(
-            _agents(), panel, cost_model=FlatBpsCost(0.0), **common  # type: ignore[arg-type]
+            _agents(), panel, cost_model=FlatBpsCost(0.0), **common
         )
         # Cost drag in return terms, annualised on the panel's own frequency.
         cost_pct = (

@@ -97,6 +97,80 @@ figure above is post-fix. A unit test now pins the property — a panel where on
 name has a known private uptrend must rank that name first — because the broken
 version passed every contract test it had.
 
+## 5. Re-run on the point-in-time universe
+
+*Added 2026-08-31, after the survivorship correction landed.*
+
+The campaign above ran on the old 65-name survivorship-biased cache. Repeated on
+the point-in-time universe — the 500 most liquid names as of 2022-08-08, chosen
+on volume observed before that date, with the names that later delisted held
+while they lived and liquidated at their last close:
+
+| candidate | Sharpe | DSR | turn/yr |
+|---|---|---|---|
+| lt_reversal[rebal=63] | 0.39 | 0.00 | 1.5 |
+| illiquidity[rebal=21] | 0.32 | 0.00 | 1.4 |
+| lt_reversal[rebal=21] | 0.30 | 0.00 | 2.3 |
+| mom12_1[rebal=21,skip=21] | −0.09 | 0.00 | 3.8 |
+| mom12_1[rebal=63,skip=21] | −0.37 | 0.00 | 2.8 |
+| low_vol[rebal=21] | −0.60 | 0.00 | 1.7 |
+
+Nothing survived: best is 0.39 against a 12-trial bar of 0.57. That is a seventh
+null.
+
+And the confirmation universe — the next 500 names by liquidity, disjoint from
+discovery — is emphatic:
+
+| candidate | discovery | confirmation |
+|---|---|---|
+| lt_reversal[rebal=63] | +0.388 | **−0.360** |
+| illiquidity[rebal=21] | +0.324 | **−0.191** |
+| mom12_1[rebal=63,skip=21] | −0.374 | **+0.245** |
+| mom12_1[rebal=63,skip=0] | −0.281 | **+0.110** |
+| residual_mom[rebal=63] | −0.320 | **+0.286** |
+
+**Every one of the five inverted.** Not decayed — inverted. Zero kept their
+sign. Whatever these rankings are measuring on 500 names does the opposite on
+the next 500, which is what a coin flip looks like when you write it down.
+
+Three things changed from the biased run, and only one of them is about
+survivorship.
+
+**The ranking inverted.** `mom12_1` was the best candidate on the biased
+universe at +1.02 and is *negative* here. But the two universes differ in
+breadth (65 mega-caps versus 500 names) as well as in survivorship, and the
+[survivorship study](SURVIVORSHIP.md) isolates the survivorship component at
+fixed breadth as **+0.013 Sharpe**. So the inversion is overwhelmingly a
+composition effect, not a survivorship one — 12-1 momentum worked on a handful
+of mega-caps in this window and does not generalise past them. Which is the same
+lesson the confirmation universe taught in section 3, arriving by another route.
+
+**PBO went from 24% to 57%.** On the narrow biased universe the selection
+procedure looked acceptable; on a realistic one it is *demonstrably* overfitting
+— the in-sample winner more often than not underperforms the median out of
+sample. The earlier 24% was not wrong, it was measured on a universe too narrow
+and too homogeneous to expose the problem.
+
+**The premise held again.** Turnover 0.8–2.4× a year, cost drag 0.16–0.38%/yr,
+unchanged by the universe. Slow factors are cheap to trade regardless of who is
+in the index.
+
+### A reporting bug this run exposed
+
+The confirmation summary counted "how many candidates were positive out of
+universe", and on the first point-in-time run it printed **"4 of 5 kept a
+positive sign"**. Three of those four were *negative* on discovery, so a
+positive confirmation is an inversion — the opposite of survival.
+
+The corrected line, counting sign agreement among candidates that were positive
+to begin with, reads **"0 of 5 … 5 inverted"** on exactly the same data.
+
+That is the largest single gap between what a number said and what it meant
+anywhere in this project, and it points one way: a summary statistic that
+collapses a signed comparison into a count of positives will find replication in
+pure noise. The table above was always in the output; only the sentence
+underneath it was wrong, and the sentence is what a reader remembers.
+
 ## What this does not rescue
 
 Nothing. Six campaigns, no survivors. The low-turnover thesis was correct about

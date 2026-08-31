@@ -35,10 +35,11 @@ the discovery set; anything that survives is then re-run, unchanged, on 70
 names that took no part in selecting it. A result that does not survive that
 transfer is not a result.
 
-The universes remain survivorship-biased — names liquid today, applied backward
-six years — which damages long-term reversal most of all, since a three-year
-loser that subsequently delisted is not in the sample. Every figure is an upper
-bound, and a generous one for that family in particular.
+With ``--pit-root`` the universes are point-in-time and contain the names that
+stopped trading; without it they are the older fixed ticker lists, which are
+survivorship-biased and make every figure an upper bound. The banner printed at
+the top of a run says which was used, because the two are not comparable and
+mislabelling them would be the most consequential error this script could make.
 """
 
 from __future__ import annotations
@@ -197,8 +198,12 @@ def pit_panels(root: str, top_n: int) -> tuple[Any, Any, str]:
     )
 
     first = universe.select_at(as_of, closes=closes, volumes=volumes, top_n=top_n)
+    # Same size as discovery, and disjoint from it: excluding the first
+    # selection and taking the next `top_n` yields ranks top_n+1..2*top_n.
+    # Equal sizes matter because a Sharpe estimated on a wider cross-section is
+    # not directly comparable to one estimated on a narrower one.
     second = universe.select_at(
-        as_of, closes=closes, volumes=volumes, top_n=top_n * 2, exclude=first.symbols
+        as_of, closes=closes, volumes=volumes, top_n=top_n, exclude=first.symbols
     )
     discovery = Panel.point_in_time(
         closes[list(first.symbols)], volumes[list(first.symbols)], universe, provenance
@@ -246,7 +251,12 @@ def main() -> None:
         f"Warm-up {WARMUP} bars, set by long-term reversal's 756+252 formation.\n"
         f"Buffer {BANDS.entry_fraction}/{BANDS.exit_fraction} and the impact cost "
         "model are frozen from the turnover study, not tuned here.\n"
-        "Universes are survivorship-biased; every figure is an upper bound.\n"
+        + (
+            "Universe is point-in-time: names that stopped trading are held while "
+            "they lived\nand liquidated at their last close.\n"
+            if args.pit_root
+            else "Universes are survivorship-biased; every figure is an upper bound.\n"
+        )
     )
 
     summary: dict[str, Any] = {"turnover": turnover_profile(panel, args.aum)}
@@ -269,8 +279,11 @@ def main() -> None:
     # 3. Whatever survived, on names that did not select it. Runs even when
     # nothing survived, because the best candidate's behaviour out of universe
     # is informative regardless of whether it cleared a bar.
-    print(f"\n{'=' * 78}\n3. CONFIRMATION — same configs, 70 names that selected "
-          f"nothing\n{'=' * 78}")
+    n_confirm = pit_confirm.n_symbols if pit_confirm is not None else 70
+    print(
+        f"\n{'=' * 78}\n3. CONFIRMATION — same configs, {n_confirm} names that "
+        f"selected nothing\n{'=' * 78}"
+    )
     if pit_confirm is not None:
         confirm = pit_confirm
     else:
@@ -313,10 +326,31 @@ def main() -> None:
             )
         summary["confirmation"] = transfers
 
-        held = [v for v in transfers.values() if v["confirm_sharpe"] > 0]
+        # Sign *agreement*, not "is the confirmation positive". Counting the
+        # latter reports a candidate that was -0.37 on discovery and +0.12 on
+        # confirmation as having survived, when it did the opposite of
+        # surviving: it inverted. On a universe where most candidates are
+        # negative, that error turns a table full of sign flips into an
+        # apparent replication rate of 80%.
+        agreed = [
+            v
+            for v in transfers.values()
+            if np.sign(v["discovery_sharpe"]) == np.sign(v["confirm_sharpe"])
+            and v["discovery_sharpe"] > 0
+        ]
+        flipped = [
+            v
+            for v in transfers.values()
+            if np.sign(v["discovery_sharpe"]) != np.sign(v["confirm_sharpe"])
+        ]
+        summary["n_sign_agreed"] = len(agreed)
+        summary["n_sign_flipped"] = len(flipped)
         print(
-            f"\n  {len(held)} of {len(transfers)} kept a positive sign out of universe. "
-            "A sign that does not survive the transfer is not a finding."
+            f"\n  {len(agreed)} of {len(transfers)} were positive on discovery AND kept "
+            f"that sign out of universe; {len(flipped)} inverted.\n"
+            "  A sign that does not survive the transfer is not a finding, and a "
+            "negative\n  candidate turning positive elsewhere is noise rather than "
+            "a discovery."
         )
 
     print(

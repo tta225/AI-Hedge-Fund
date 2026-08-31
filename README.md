@@ -182,14 +182,23 @@ Every campaign, and why it failed. These are the point of the project.
 | [`SEASONALITY_STUDY.md`](docs/SEASONALITY_STUDY.md) | the dispersion trap — a homogeneous candidate set *lowers* the deflated-Sharpe bar |
 | [`CROSS_SECTIONAL_STUDY.md`](docs/CROSS_SECTIONAL_STUDY.md) | every candidate above 30× annual turnover lost money |
 | [`TURNOVER_AND_CAPACITY.md`](docs/TURNOVER_AND_CAPACITY.md) | **the one thing that replicated**: hysteresis is worth ~0.45 Sharpe and ~5× capacity out of sample. It did not manufacture an edge |
-| [`LOW_TURNOVER_STUDY.md`](docs/LOW_TURNOVER_STUDY.md) | slow factors are genuinely cheap to trade (0.8–2.5× turnover) and still produced nothing; the best discovery result inverted out of universe |
+| [`LOW_TURNOVER_STUDY.md`](docs/LOW_TURNOVER_STUDY.md) | slow factors are genuinely cheap to trade (0.8–2.5× turnover) and still produced nothing; on the point-in-time universe **all five** top candidates inverted out of universe |
+| [`SURVIVORSHIP.md`](docs/SURVIVORSHIP.md) | the caveat six studies carried, finally measured: **+0.013 Sharpe**, indistinguishable from zero for a market-neutral book. Survivorship is not why nothing worked |
 
 Two methodological lessons worth extracting:
 
 **PBO cannot see universe overfitting.** It reshuffles folds within one
 universe, so it detects overfitting to a *time window* and is blind to
 overfitting to a *set of names*. In the sixth campaign PBO read 24%
-("generalises acceptably") and the transfer failed completely.
+("generalises acceptably") and the transfer failed completely. Re-run on a
+realistic 500-name universe the same procedure scored **57%** — the narrow
+universe was hiding the overfitting, not preventing it.
+
+**A summary statistic can find replication in noise.** The confirmation
+summary counted "candidates positive out of universe" and reported *4 of 5 kept
+their sign*. Three of those were negative on discovery, so a positive
+confirmation was an inversion. Corrected to count sign *agreement*, the same
+data reads *0 of 5; 5 inverted*.
 
 **Bugs found by tests that pin mechanism, not output.** A residual-momentum
 agent was ranking floating-point noise because OLS residuals with an intercept

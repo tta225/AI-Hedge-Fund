@@ -133,7 +133,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", default="data/pit")
     parser.add_argument("--aum", type=float, default=1e7)
-    parser.add_argument("--top-n", type=int, default=100)
+    parser.add_argument(
+        "--top-n", type=int, nargs="+", default=[100, 500, 1000],
+        help="Universe breadths to compare. Attrition is near zero among the very "
+             "largest names, so a single size cannot show the effect.",
+    )
     parser.add_argument("--out", default="")
     args = parser.parse_args()
 
@@ -149,9 +153,14 @@ def main() -> None:
     print(f"{'=' * 78}\n1. ATTRITION — what a today-only universe deletes\n{'=' * 78}")
     dates = [d for d in pd.date_range(closes.index[0], closes.index[-1], freq="YE")
              if d > closes.index[0] + pd.Timedelta(days=400)]
+    # Reported at the widest breadth under test: attrition among the very
+    # largest names is close to zero, so a narrow cut would make the table look
+    # like there is nothing here to correct.
+    widest = max(args.top_n)
     report = universe.survivorship_report(
-        dates, closes=closes, volumes=volumes, top_n=args.top_n
+        dates, closes=closes, volumes=volumes, top_n=widest
     )
+    print(f"  (of the {widest} most liquid names on each date)")
     print(report.to_string(index=False))
     total_deleted = int(report["n_later_delisted"].sum())
     print(
@@ -160,53 +169,85 @@ def main() -> None:
         "universe contains\n  none of them, at any point in their history.\n"
     )
 
-    # 2. The controlled comparison.
+    # 2. The controlled comparison, at several universe breadths.
+    #
+    # One size cannot answer the question. The hundred most liquid US equities
+    # almost never delist — mega-caps get acquired, not wound up — so a top-100
+    # universe shows an attrition of roughly zero and would suggest survivorship
+    # bias does not exist. Widen the universe and the failures appear. The
+    # relationship between breadth and bias *is* the finding, so it is measured
+    # rather than assumed at one arbitrary cut.
     as_of = closes.index[WARMUP] if len(closes) > WARMUP else closes.index[len(closes) // 2]
-    pit_panel, members, _ = build_panel(
-        closes, volumes, universe, as_of=as_of, top_n=args.top_n
-    )
     survivors = universe.survivor_only(closes.index[-1])
-    kept = [s for s in members if s in survivors.listings]
-    biased_panel = Panel.point_in_time(closes[kept], volumes[kept], survivors, REAL)
-
-    print(f"{'=' * 78}\n2. THE COMPARISON — same strategy, two universes\n{'=' * 78}")
-    print(
-        f"  Selected as of {as_of.date()}: {len(members)} names, of which "
-        f"{len(members) - len(kept)} later delisted.\n"
-        f"  Arm A (point-in-time): {len(members)} names, delisted ones liquidated "
-        "at their last close.\n"
-        f"  Arm B (survivors only): {len(kept)} names, the failures deleted from "
-        "history.\n"
-    )
-    print(f"  {'family':<16}{'PIT':>9}{'survivor':>10}{'bias':>9}{'PIT gross':>11}{'turn':>8}")
-    print("  " + "-" * 63)
 
     summary: dict[str, Any] = {
         "attrition": report.to_dict(orient="records"),
         "as_of": str(as_of.date()),
-        "n_members": len(members),
-        "n_later_delisted": len(members) - len(kept),
-        "families": {},
+        "by_universe_size": {},
     }
-    biases = []
-    for label, agents in _families():
-        pit = run(pit_panel, agents, args.aum)
-        biased = run(biased_panel, [type(a)(a.config) for a in agents], args.aum)
-        bias = biased["sharpe"] - pit["sharpe"]
-        biases.append(bias)
-        summary["families"][label] = {"pit": pit, "survivor_only": biased, "bias": bias}
-        print(
-            f"  {label:<16}{pit['sharpe']:>+9.3f}{biased['sharpe']:>+10.3f}"
-            f"{bias:>+9.3f}{pit['gross_sharpe']:>+11.3f}{pit['turnover']:>8.1f}"
-        )
 
-    finite = [b for b in biases if np.isfinite(b)]
-    if finite:
-        mean_bias = float(np.mean(finite))
+    print(f"{'=' * 78}\n2. THE COMPARISON — same strategy, two universes\n{'=' * 78}")
+    print(f"  Universe selected as of {as_of.date()}, by trailing dollar volume.\n")
+
+    for top_n in args.top_n:
+        pit_panel, members, _ = build_panel(
+            closes, volumes, universe, as_of=as_of, top_n=top_n
+        )
+        kept = [s for s in members if s in survivors.listings]
+        n_dead = len(members) - len(kept)
+        if not kept or n_dead == 0:
+            print(
+                f"  top {top_n}: {len(members)} names, none later delisted — nothing "
+                "to measure at this breadth.\n"
+            )
+            summary["by_universe_size"][str(top_n)] = {
+                "n_members": len(members), "n_later_delisted": 0, "families": {}
+            }
+            continue
+
+        biased_panel = Panel.point_in_time(closes[kept], volumes[kept], survivors, REAL)
+        print(
+            f"  top {top_n}: {len(members)} names, {n_dead} later delisted "
+            f"({n_dead / len(members):.1%})"
+        )
+        print(
+            f"  {'family':<16}{'PIT':>9}{'survivor':>10}{'bias':>9}"
+            f"{'PIT gross':>11}{'turn':>8}"
+        )
+        print("  " + "-" * 63)
+
+        entry: dict[str, Any] = {
+            "n_members": len(members), "n_later_delisted": n_dead, "families": {}
+        }
+        biases = []
+        for label, agents in _families():
+            pit = run(pit_panel, agents, args.aum)
+            biased = run(biased_panel, [type(a)(a.config) for a in agents], args.aum)
+            bias = biased["sharpe"] - pit["sharpe"]
+            biases.append(bias)
+            entry["families"][label] = {"pit": pit, "survivor_only": biased, "bias": bias}
+            print(
+                f"  {label:<16}{pit['sharpe']:>+9.3f}{biased['sharpe']:>+10.3f}"
+                f"{bias:>+9.3f}{pit['gross_sharpe']:>+11.3f}{pit['turnover']:>8.1f}"
+            )
+        finite = [b for b in biases if np.isfinite(b)]
+        if finite:
+            entry["mean_bias"] = float(np.mean(finite))
+            print(f"  mean bias at this breadth: {np.mean(finite):+.3f} Sharpe\n")
+        summary["by_universe_size"][str(top_n)] = entry
+
+    all_biases = [
+        family["bias"]
+        for entry in summary["by_universe_size"].values()
+        for family in entry["families"].values()
+        if np.isfinite(family["bias"])
+    ]
+    if all_biases:
+        mean_bias = float(np.mean(all_biases))
         summary["mean_bias"] = mean_bias
         print(
-            f"\n  Mean survivorship bias across {len(finite)} families: "
-            f"{mean_bias:+.3f} Sharpe.\n"
+            f"  Mean survivorship bias across {len(all_biases)} "
+            f"(family, breadth) pairs: {mean_bias:+.3f} Sharpe.\n"
             "  Positive means deleting the failures flattered the result, which is\n"
             "  the direction every earlier campaign's caveat was pointing at."
         )

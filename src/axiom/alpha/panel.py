@@ -30,6 +30,7 @@ from axiom.core.provenance import Provenance, weakest_kind
 
 if TYPE_CHECKING:
     from axiom.core.series import OHLCVSeries
+    from axiom.data.universe import PointInTimeUniverse
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,15 @@ class Panel:
     closes: np.ndarray
     volumes: np.ndarray
     provenance: Provenance
+    #: ``(n_bars, n_symbols)`` boolean — was each name actually trading at each
+    #: bar? ``None`` means "assume everything was", which is the survivorship
+    #: assumption and is correct only for a universe of names that all lived
+    #: through the whole window.
+    #:
+    #: Present on a point-in-time panel, where a name that has not yet listed
+    #: and one that has already died are both untradable, and a backtest that
+    #: cannot tell them from a live name is holding positions nobody could hold.
+    listed: np.ndarray | None = None
 
     def __post_init__(self) -> None:
         if self.closes.shape != (len(self.index), len(self.symbols)):
@@ -60,6 +70,26 @@ class Panel:
             )
         if self.volumes.shape != self.closes.shape:
             raise ValueError("volumes and closes must have the same shape")
+        if self.listed is not None and self.listed.shape != self.closes.shape:
+            raise ValueError(
+                f"listed mask {self.listed.shape} does not match closes "
+                f"{self.closes.shape}"
+            )
+
+    @property
+    def is_point_in_time(self) -> bool:
+        """True when this panel knows which names were tradable when."""
+        return self.listed is not None
+
+    def tradable(self, index: int) -> np.ndarray:
+        """Which names could be held at bar ``index``.
+
+        Without a mask this is every name — the survivorship assumption, stated
+        rather than implied.
+        """
+        if self.listed is None:
+            return np.ones(self.n_symbols, dtype=bool)
+        return np.asarray(self.listed[index], dtype=bool)
 
     def __len__(self) -> int:
         return len(self.index)
@@ -150,6 +180,59 @@ class Panel:
             closes=closes,
             volumes=volumes,
             provenance=_weakest_provenance([series[s].provenance for s in symbols]),
+        )
+
+    @classmethod
+    def point_in_time(
+        cls,
+        closes: pd.DataFrame,
+        volumes: pd.DataFrame,
+        universe: PointInTimeUniverse,
+        provenance: Provenance,
+    ) -> Panel:
+        """Build a panel that knows when each name was tradable.
+
+        The counterpart to :meth:`from_series`, and it differs in the one way
+        that matters: the index is the **union** of trading days rather than the
+        intersection. Inner-joining is correct for a set of names that all lived
+        through the window and catastrophic for a point-in-time universe — a
+        company that delisted in 2022 shares no bars with one that listed in
+        2023, so the intersection of a realistic universe is empty or nearly so,
+        and the silent result is a panel of whichever handful of names happened
+        to span everything. Which is survivorship bias, reintroduced by a join.
+
+        So the frames are aligned on the union, gaps stay NaN, and a separate
+        mask records who was actually trading. Agents already skip NaN columns;
+        the mask is what stops the *backtester* from holding a dead name.
+        """
+        from axiom.data.universe import listed_mask
+
+        symbols = tuple(sorted(set(closes.columns) & set(volumes.columns)))
+        if not symbols:
+            raise ValueError("closes and volumes share no symbols")
+        index = pd.DatetimeIndex(closes.index.union(volumes.index)).sort_values()
+
+        aligned_closes = closes.reindex(index=index, columns=list(symbols)).astype(float)
+        aligned_volumes = volumes.reindex(index=index, columns=list(symbols)).astype(float)
+        mask = listed_mask(universe, index, symbols)
+
+        # Outside its listing window a name has no price, whatever the frame
+        # happens to contain. Enforced rather than trusted, so a vendor row
+        # carrying a stale quote for a delisted ticker cannot be traded on.
+        # copy=True: pandas may hand back a read-only view of its own block,
+        # and the panel owns its arrays.
+        values = aligned_closes.to_numpy(dtype=float, copy=True)
+        volume_values = aligned_volumes.to_numpy(dtype=float, copy=True)
+        values[~mask] = np.nan
+        volume_values[~mask] = np.nan
+
+        return cls(
+            symbols=symbols,
+            index=index,
+            closes=values,
+            volumes=volume_values,
+            provenance=provenance,
+            listed=mask,
         )
 
 

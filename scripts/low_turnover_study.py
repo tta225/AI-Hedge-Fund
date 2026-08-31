@@ -177,6 +177,45 @@ def turnover_profile(panel: Any, aum: float) -> dict[str, Any]:
     return rows
 
 
+def pit_panels(root: str, top_n: int) -> tuple[Any, Any, str]:
+    """Discovery and confirmation panels from the point-in-time cache.
+
+    Split by liquidity rank rather than at random: the top ``top_n`` names form
+    the discovery universe and the next ``top_n`` the confirmation set, so the
+    two are disjoint and the second is not a resample of the first. Both are
+    selected **as of the start of trading**, using only volume observed before
+    it, and both retain the names that later delisted.
+    """
+    from axiom.alpha.panel import Panel
+    from axiom.core.provenance import DataKind, Provenance
+    from scripts.survivorship_study import load
+
+    closes, volumes, universe = load(root)
+    as_of = closes.index[min(WARMUP, len(closes) - 1)]
+    provenance = Provenance(
+        source="alpaca:pit", kind=DataKind.REAL, detail="point-in-time US equities"
+    )
+
+    first = universe.select_at(as_of, closes=closes, volumes=volumes, top_n=top_n)
+    second = universe.select_at(
+        as_of, closes=closes, volumes=volumes, top_n=top_n * 2, exclude=first.symbols
+    )
+    discovery = Panel.point_in_time(
+        closes[list(first.symbols)], volumes[list(first.symbols)], universe, provenance
+    )
+    confirm = Panel.point_in_time(
+        closes[list(second.symbols)], volumes[list(second.symbols)], universe, provenance
+    )
+    note = (
+        f"Point-in-time universes selected as of {as_of.date()}: "
+        f"{len(first.symbols)} discovery ({first.n_later_delisted} delisted within a "
+        f"year), {len(second.symbols)} confirmation ({second.n_later_delisted}). "
+        "Names that stopped trading are held while they lived and liquidated at "
+        "their last close."
+    )
+    return discovery, confirm, note
+
+
 def main() -> None:
     from scripts.cross_sectional_study import load_panel
 
@@ -187,9 +226,20 @@ def main() -> None:
     parser.add_argument("--aum", type=float, default=1e7)
     parser.add_argument("--folds", type=int, default=3)
     parser.add_argument("--out", default="")
+    parser.add_argument(
+        "--pit-root", default="",
+        help="Run against the survivorship-free cache in this directory instead "
+             "of the fixed ticker lists.",
+    )
+    parser.add_argument("--top-n", type=int, default=100)
     args = parser.parse_args()
 
-    panel = load_panel(args.data_root, args.timeframe)
+    pit_confirm = None
+    if args.pit_root:
+        panel, pit_confirm, note = pit_panels(args.pit_root, args.top_n)
+        print(note + "\n")
+    else:
+        panel = load_panel(args.data_root, args.timeframe)
     print(
         f"Discovery panel: {panel.n_symbols} symbols x {len(panel):,} bars "
         f"({panel.index[0].date()} -> {panel.index[-1].date()})\n"
@@ -221,11 +271,14 @@ def main() -> None:
     # is informative regardless of whether it cleared a bar.
     print(f"\n{'=' * 78}\n3. CONFIRMATION — same configs, 70 names that selected "
           f"nothing\n{'=' * 78}")
-    try:
-        confirm = load_panel(args.confirm_root, args.timeframe)
-    except SystemExit:
-        print("  No confirmation universe cached; skipping. Run scripts/cache_equities.py.")
-        confirm = None
+    if pit_confirm is not None:
+        confirm = pit_confirm
+    else:
+        try:
+            confirm = load_panel(args.confirm_root, args.timeframe)
+        except SystemExit:
+            print("  No confirmation universe cached; skipping. Run scripts/cache_equities.py.")
+            confirm = None
 
     if confirm is not None:
         ranked = sorted(

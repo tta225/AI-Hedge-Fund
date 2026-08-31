@@ -211,8 +211,16 @@ def average_dollar_volume(
     if index <= start:
         return np.zeros(closes.shape[1] if closes.ndim > 1 else 1)
     window_notional = closes[start:index] * volumes[start:index]
+    # An all-NaN column is routine on a point-in-time panel: a name that has
+    # not listed yet, or has already delisted, has no volume history at all.
+    # numpy warns on the empty slice; the answer we want is zero, which the
+    # caller's ``min_adv_notional`` floor then turns into a heavy charge.
     with np.errstate(invalid="ignore"):
-        return np.asarray(np.nanmean(window_notional, axis=0), dtype=float)
+        observed = np.count_nonzero(~np.isnan(window_notional), axis=0)
+        totals = np.nansum(window_notional, axis=0)
+    return np.asarray(
+        np.where(observed > 0, totals / np.maximum(observed, 1), 0.0), dtype=float
+    )
 
 
 def trailing_volatility(

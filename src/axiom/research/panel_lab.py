@@ -285,6 +285,10 @@ def backtest_panel(
                 target = partial_rebalance(weights, target, rebalance_fraction)
             if min_trade > 0.0:
                 target = suppress_small_trades(weights, target, min_trade)
+            # A name that is not trading cannot be held, whatever the ranking
+            # says about it. Applied after the turnover machinery so that
+            # hysteresis cannot decide to "keep" a delisted name.
+            target = np.where(panel.tradable(i), target, 0.0)
 
             if not np.any(target):
                 skipped += 1
@@ -305,6 +309,30 @@ def backtest_panel(
         else:
             traded = 0.0
             cost = 0.0
+
+        # Forced liquidation. A name can stop trading between rebalances, and
+        # the book does not get to keep it: the position is closed at the last
+        # observed close and the exit is charged like any other trade.
+        #
+        # Without this the arithmetic below quietly does something much worse
+        # than wrong. A delisted name has no price at i+1, so its step becomes
+        # NaN, `nan_to_num` turns that into 0.0, and the book holds a dead
+        # position at exactly zero return for the rest of the backtest — free
+        # of cost, free of risk, and diluting the denominator of every
+        # subsequent figure. Silicon Valley Bank would sit in the portfolio
+        # forever, marked flat.
+        surviving = panel.tradable(i + 1)
+        exiting = (weights != 0.0) & ~surviving
+        if exiting.any():
+            exit_deltas = np.where(exiting, -weights, 0.0)
+            traded += float(np.abs(exit_deltas).sum())
+            cost += model.charge(
+                exit_deltas,
+                aum=aum,
+                adv_notional=average_dollar_volume(panel.closes, panel.volumes, i),
+                volatility=trailing_volatility(panel.closes, i),
+            )
+            weights = np.where(exiting, 0.0, weights)
 
         # The return from i to i+1, earned by weights formed from data before
         # i. One bar later and this would be the return the ranking was

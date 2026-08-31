@@ -67,21 +67,35 @@ def _headers() -> dict[str, str]:
     return {"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": secret}
 
 
-def _get(url: str, headers: dict[str, str], retries: int = 4) -> Any:
-    """GET with backoff. A rate limit is a wait, not a failure."""
+def _get(url: str, headers: dict[str, str], retries: int = 6) -> Any:
+    """GET with backoff, retrying transport failures as well as HTTP ones.
+
+    Retrying only ``HTTPError`` was a real defect: a connection reset raises
+    ``URLError``, which is not an ``HTTPError``, so a twenty-minute download
+    of fifteen thousand symbols died on a single transient blip and discarded
+    everything it had fetched. Over a job that long a reset is not an
+    exceptional event, it is an expected one.
+    """
     delay = 2.0
+    last: Exception | None = None
     for attempt in range(retries):
         try:
             request = urllib.request.Request(url, headers=headers)
             with urllib.request.urlopen(request, timeout=120) as response:
                 return json.loads(response.read())
         except urllib.error.HTTPError as exc:
-            if exc.code in (429, 500, 502, 503, 504) and attempt < retries - 1:
-                time.sleep(delay)
-                delay *= 2
-                continue
-            raise
-    raise RuntimeError("unreachable")
+            # A 4xx that is not a rate limit is a bad request; retrying it just
+            # asks the same wrong question more slowly.
+            if exc.code not in (429, 500, 502, 503, 504):
+                raise
+            last = exc
+        except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
+            # Reset by peer, DNS blip, truncated body. All transient.
+            last = exc
+        if attempt < retries - 1:
+            time.sleep(delay)
+            delay *= 2
+    raise RuntimeError(f"giving up after {retries} attempts: {last}")
 
 
 def fetch_assets(headers: dict[str, str]) -> list[dict[str, Any]]:
@@ -108,12 +122,39 @@ def fetch_assets(headers: dict[str, str]) -> list[dict[str, Any]]:
 
 
 def fetch_bars(
-    symbols: list[str], headers: dict[str, str], start: str, end: str, feed: str
+    symbols: list[str],
+    headers: dict[str, str],
+    start: str,
+    end: str,
+    feed: str,
+    checkpoint_dir: Path | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Daily bars for many symbols, paged and batched."""
+    """Daily bars for many symbols, paged, batched, and resumable.
+
+    Each batch is written to its own file as it completes, and a batch whose
+    file already exists is skipped. Fetching fifteen thousand symbols takes
+    twenty minutes, and a job that long will meet a connection reset; without
+    checkpoints the choice on failure is to lose everything or to write retry
+    logic that eventually becomes this.
+    """
     out: dict[str, list[dict[str, Any]]] = {}
+    if checkpoint_dir is not None:
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
     for offset in range(0, len(symbols), BATCH):
         chunk = symbols[offset : offset + BATCH]
+        shard = checkpoint_dir / f"batch-{offset:06d}.json" if checkpoint_dir else None
+
+        if shard is not None and shard.exists():
+            try:
+                for symbol, bars in json.loads(shard.read_text()).items():
+                    out.setdefault(symbol, []).extend(bars)
+                continue
+            except json.JSONDecodeError:
+                # A shard written during a crash. Refetch rather than trust it.
+                shard.unlink()
+
+        batch: dict[str, list[dict[str, Any]]] = {}
         token: str | None = None
         while True:
             params = {
@@ -129,15 +170,31 @@ def fetch_bars(
                 params["page_token"] = token
             try:
                 payload = _get(f"{_BARS_URL}?{urllib.parse.urlencode(params)}", headers)
-            except urllib.error.HTTPError as exc:
-                print(f"    batch at {offset} failed ({exc.code}); skipping")
+            except (urllib.error.HTTPError, RuntimeError) as exc:
+                # One bad symbol poisons its whole batch, and the API does not
+                # say which. Skipping the batch loses at most BATCH symbols;
+                # failing the run loses all of them.
+                print(f"    batch at {offset} failed ({exc}); skipping")
+                batch = {}
                 break
             for symbol, bars in (payload.get("bars") or {}).items():
-                out.setdefault(symbol, []).extend(bars)
+                batch.setdefault(symbol, []).extend(bars)
             token = payload.get("next_page_token")
             if not token:
                 break
             time.sleep(PAUSE)
+
+        if shard is not None:
+            # Written atomically: a half-written shard read back on resume
+            # would look like a symbol with truncated history, which is worse
+            # than no shard at all.
+            temporary = shard.with_suffix(".partial")
+            temporary.write_text(json.dumps(batch))
+            temporary.replace(shard)
+
+        for symbol, bars in batch.items():
+            out.setdefault(symbol, []).extend(bars)
+
         done = min(offset + BATCH, len(symbols))
         print(f"    {done:,}/{len(symbols):,} symbols, {len(out):,} with bars")
         time.sleep(PAUSE)
@@ -169,6 +226,10 @@ def main() -> None:
     parser.add_argument(
         "--limit", type=int, default=0,
         help="Cap the number of symbols fetched. 0 means every one.",
+    )
+    parser.add_argument(
+        "--no-resume", dest="resume", action="store_false",
+        help="Refetch every batch instead of reusing checkpoint shards.",
     )
     parser.add_argument(
         "--supplement", default="data/known_delistings.txt",
@@ -209,7 +270,8 @@ def main() -> None:
         symbols = symbols[: args.limit]
 
     print(f"\nBars for {len(symbols):,} symbols ({args.start} -> {args.end}, {args.feed}):")
-    bars = fetch_bars(symbols, headers, args.start, args.end, args.feed)
+    checkpoints = out / "_batches" if args.resume else None
+    bars = fetch_bars(symbols, headers, args.start, args.end, args.feed, checkpoints)
 
     closes, volumes = to_frames(bars)
     print(f"\nMatrix: {closes.shape[0]:,} bars x {closes.shape[1]:,} symbols")

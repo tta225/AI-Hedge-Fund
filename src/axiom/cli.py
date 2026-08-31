@@ -831,6 +831,11 @@ def poll_fills(
 def desk_health(
     db: str = typer.Option("data/desk.db", help="Desk database."),
     alert: bool = typer.Option(False, help="Emit alerts for anything failing."),
+    environment: str = typer.Option(
+        "paper",
+        help="Which credential scope the alert sinks resolve from: paper or live. "
+        "A paper desk must not be able to page whoever carries the live one.",
+    ),
 ) -> None:
     """Is the desk alive, and is what it believes still current?
 
@@ -855,7 +860,18 @@ def desk_health(
     console.print(f"[{colour}]{report.render()}[/{colour}]")
 
     if alert:
-        router = AlertRouter()
+        # Every sink the environment has credentials for, plus the console,
+        # which is the only one that still works when the network is what
+        # failed. Nothing configured means console alone, and `sinks` names
+        # what actually got wired so a silent misconfiguration is visible.
+        from axiom.ops.sinks import sinks_from_environment
+
+        sinks = sinks_from_environment(environment)
+        names = ", ".join(
+            getattr(sink, "__name__", type(sink).__name__) for sink in sinks
+        )
+        console.print(f"[dim]alert sinks: {names}[/dim]")
+        router = AlertRouter(sinks)
         for item in alerts_for_health(report):
             router.send(item)
 

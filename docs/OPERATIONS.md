@@ -111,6 +111,47 @@ Alert on `axiom_halted == 1` and on the p99 of `axiom_tick_seconds`. A tick loop
 averaging 200ms with a p99 of 30s misses one bar in a hundred, and the mean says
 it is healthy — which is why the histogram exists and an average does not.
 
+## Alerting
+
+`AlertRouter` deduplicates by key with a cooldown and pairs every condition
+with a resolution. Sinks are in `axiom.ops.sinks` and are wired from whatever
+credentials the environment has:
+
+```bash
+export AXIOM_PAPER_SLACK_WEBHOOK_URL='https://hooks.slack.com/services/...'
+export AXIOM_LIVE_PAGERDUTY_ROUTING_KEY='...'
+export AXIOM_PAPER_ALERT_WEBHOOK_URL='https://internal.example/incidents'
+
+axiom desk-health --alert --environment paper
+```
+
+The command prints which sinks actually got wired, so a typo in a variable name
+shows up as a missing sink rather than as silence.
+
+| sink | when |
+|---|---|
+| `console_sink` | always — the only one that works when the network is what broke |
+| `FileSink` | opt-in via `log_path`; local JSON-lines record, no network |
+| `SlackSink` | routine warnings and criticals |
+| `PagerDutySink` | criticals only by default; triggers and auto-resolves by dedup key |
+| `WebhookSink` | anything else — posts the alert's own fields, not a vendor schema |
+
+Three properties worth knowing:
+
+**Webhook URLs are credentials.** Anyone holding one can post as the desk, so
+they resolve through `axiom.ops.secrets` and are environment-scoped. A paper
+desk cannot page whoever carries the live one, and a URL never reaches a log
+line even on a delivery failure.
+
+**Resolutions bypass the severity threshold.** A PagerDuty incident opened by a
+critical alert carries an INFO-severity resolution; if that were filtered, the
+incident would never close.
+
+**No retry, no queue.** A sink that hangs inside a desk tick turns a
+notification problem into an execution problem, so every sink has a 5s timeout
+and swallows its own failures. A missed alert is recovered by the health check,
+which reads the store and does not depend on any of this having worked.
+
 ## Compliance
 
 Pre-trade rules run in `DeskRunner._send`, **before** the order is recorded. A
@@ -237,11 +278,8 @@ in-place and there is no down migration.
 Stated here rather than in a design document, because the gap matters most to
 whoever is operating this.
 
-- **No alerting integration ships.** `AlertRouter` deduplicates and sends
-  resolutions, but only `console_sink` exists. Wire a real sink before relying
-  on it; alerts nobody receives are logs.
-- **No point-in-time universe.** Every backtest figure in `docs/` is an upper
-  bound of unknown size. This is the largest single gap in the platform.
+- **The backup/restore path is tested but has never been exercised under
+  incident conditions.** Schedule a drill.
 - **No fundamentals feed**, so value and quality — the strongest low-turnover
   factor families — cannot be tested at all.
 - **Market orders only.** No TWAP/VWAP/participation algos, no smart routing.
@@ -249,8 +287,9 @@ whoever is operating this.
   capital allocation or risk aggregation across strategies.
 - **No regulatory trade record** beyond the store's own append-only log, and no
   retention policy.
-- **The backup/restore path is tested but has never been exercised under
-  incident conditions.** Schedule a drill.
+- **Delisting is modelled as an exit at the last close.** A bankruptcy that
+  stops trading before the equity is wiped out is still flattered. Much smaller
+  than the survivorship bias now removed, and it points the same way.
 
 And the one that governs all the others: **no strategy has cleared the promotion
 gate.** The infrastructure described above is ready for capital. Nothing in the

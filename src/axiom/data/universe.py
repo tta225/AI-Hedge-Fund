@@ -64,6 +64,11 @@ DEFAULT_SELECTION_LOOKBACK = 252
 #: selectable. A name that printed on three days has an average dollar volume
 #: that is not an estimate of anything.
 MIN_COVERAGE = 0.6
+#: A name whose last bar is within this many days of the end of the data is
+#: treated as still trading rather than as delisted. Without it, a name that
+#: simply did not print on the final session — thin, halted, a holiday — is
+#: indistinguishable from one that died.
+ALIVE_TOLERANCE_DAYS = 7
 
 
 @dataclass(frozen=True, slots=True)
@@ -218,10 +223,16 @@ class PointInTimeUniverse:
         ranked = notional[eligible].mean().sort_values(ascending=False)
         chosen = tuple(ranked.head(top_n).index)
 
-        one_year_on = date + pd.Timedelta(days=365)
-        later_delisted = sum(
-            1 for s in chosen if self.listings[s].died_before(one_year_on)
-        )
+        # Attrition is only observable inside the data. Near the end of the
+        # sample every name's last bar precedes "one year from now", so a naive
+        # comparison reports 100% attrition on the final snapshot — an artefact
+        # of the data stopping, not of companies failing. The horizon is
+        # therefore capped at the last bar in the sample, less a few days so a
+        # name that simply did not print on the final session is not counted as
+        # dead.
+        data_end = pd.Timestamp(volumes.index[-1]) - pd.Timedelta(days=ALIVE_TOLERANCE_DAYS)
+        horizon = min(date + pd.Timedelta(days=365), data_end)
+        later_delisted = sum(1 for s in chosen if self.listings[s].died_before(horizon))
         return UniverseSnapshot(
             as_of=date,
             symbols=chosen,

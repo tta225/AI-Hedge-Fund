@@ -170,6 +170,11 @@ def main() -> None:
         "--limit", type=int, default=0,
         help="Cap the number of symbols fetched. 0 means every one.",
     )
+    parser.add_argument(
+        "--supplement", default="data/known_delistings.txt",
+        help="File of extra tickers to fetch beyond the asset endpoint. See the "
+             "file's own header for why it is necessary and what it does not cover.",
+    )
     args = parser.parse_args()
 
     headers = _headers()
@@ -180,7 +185,26 @@ def main() -> None:
     assets = fetch_assets(headers)
     active = {a["symbol"] for a in assets if a.get("status") == "active"}
     exchanges = {a["symbol"]: a.get("exchange", "") for a in assets}
-    symbols = sorted(a["symbol"] for a in assets)
+    symbols = {a["symbol"] for a in assets}
+
+    # Alpaca purges the asset record of some delisted names while still serving
+    # their bars — Silicon Valley Bank, First Republic, Twitter, VMware and
+    # Activision among them. They are undiscoverable from /v2/assets, and they
+    # are exactly the large-cap failures whose absence flatters a backtest
+    # most, so they are supplied by name.
+    supplement = Path(args.supplement)
+    if supplement.exists():
+        extra = {
+            token
+            for line in supplement.read_text().splitlines()
+            if not line.startswith("#")
+            for token in line.split()
+        }
+        new = extra - symbols
+        symbols |= extra
+        print(f"  supplement: {len(extra)} tickers, {len(new)} not in the asset list")
+
+    symbols = sorted(symbols)
     if args.limit:
         symbols = symbols[: args.limit]
 

@@ -1,216 +1,216 @@
 # AXIOM
 
-**Proprietary AI hedge fund platform — ICT alpha engine, research terminal, and paper-first execution.**
+**A systematic trading platform built to tell you when it has not found anything.**
 
-AXIOM is a systematic trading platform built around three ideas:
+Most research codebases are optimised to produce a result. This one is optimised
+to make a false result hard to produce and easy to detect. That is a different
+objective, and it shows up in what the code refuses to do rather than in what it
+computes.
 
-1. **The ICT structural model is the alpha layer.** Order blocks, fair value gaps, liquidity sweeps, market structure shifts, killzones, and SMT divergence are implemented as a first-class typed engine, not as chart annotations.
-2. **A backtest that cannot be trusted is worse than no backtest.** Anti-lookahead discipline, mandatory data provenance, and always-on transaction costs are enforced by the type system and the test suite — not by convention.
-3. **Nothing reaches a live venue by accident.** Paper and simulation are the default. Live routing requires an explicit mode, an explicit confirmation phrase, and a disengaged kill switch.
+> ⚠️ **Research and engineering infrastructure, not financial advice.** No
+> bundled strategy is a proven edge. Nothing here has cleared the promotion gate.
+> Paper trade first, and only risk capital you can afford to lose.
 
-> ⚠️ **This is research and engineering infrastructure, not financial advice.** It makes no claim of profitability, and none of the bundled strategies is a proven edge. Paper trade first. Only risk capital you can afford to lose.
+> 📉 **Six research campaigns. No survivors.** ICT structural features, sweep
+> continuation, intraday seasonality, meta-labelling, cross-sectional equities,
+> and low-turnover factors have each been measured and each failed to clear a
+> deflated-Sharpe threshold. Those nulls are the project's main output so far,
+> and each one is documented with its mechanism.
 
-> 📉 **The first measurement on real market data found no edge.** Across ~38,700 real bars, fair value gaps and order blocks show **zero lift over a control band that carries no methodological meaning**, and liquidity sweeps lean the *wrong way* in all four datasets. Read [`docs/REAL_DATA_FINDINGS.md`](docs/REAL_DATA_FINDINGS.md) before trusting anything here.
+---
+
+## What is actually here
+
+Three layers, at different stages of maturity.
+
+**A research harness that is hard to fool.** Causality is enforced by the type
+system rather than by convention, provenance is permanent, every candidate
+counts as a trial, and results are checked against a reference class of 61
+published anomalies before anyone gets excited.
+
+**A live desk that can be operated.** Idempotent order recording, broker-as-
+source-of-truth reconciliation, persistent halts, crash-only restart, structured
+logs with correlation IDs, health readable from the store alone, deduplicated
+alerts with real delivery, pre-trade compliance, backups, a container, and a
+promotion gate that has so far refused everything.
+
+**Strategies.** These are reference implementations of methodologies, not edges.
+The evidence says so.
 
 ---
 
 ## Quick start
 
-> **Note:** the work is on the branch `claude/ai-hedge-fund-platform-vxebwq`,
-> not `main`. Clone, then `git checkout claude/ai-hedge-fund-platform-vxebwq`.
-
 ```bash
 python -m pip install -e ".[dev]"
 
-# Save your API keys (prompts you; input is hidden). Optional — everything
-# below runs offline with --synthetic.
-python -m axiom.cli setup
-
-# Full offline demonstration: terminal + ICT engine + backtest, no API keys.
+# Everything below runs offline. Synthetic output is stamped SYNTHETIC and
+# refuses to present itself as performance.
 python -m axiom.cli demo
-
-# Structural read of a symbol
-python -m axiom.cli analyse --symbol ES --timeframe 15m --synthetic
-
-# The operator terminal
 python -m axiom.cli terminal --symbol ES --synthetic
-
-# Backtest, costs always applied
-python -m axiom.cli backtest --strategy silver-bullet --synthetic --days 120
-
-# Real bars, no credentials — Coinbase serves keyless public candles
-python -m axiom.cli cache-data
-python -m axiom.cli base-rates --data-root data/cache
-
-# The five-agent pipeline (Research → Debate → Backtest → Risk → Review)
-python -m axiom.cli pipeline --synthetic
-
-# Causal HMM regime detection
-python -m axiom.cli regime --synthetic --states 3
-
-# Sweep many strategies walk-forward, ranked by deflated Sharpe
 python -m axiom.cli research --synthetic --folds 4
 
-# Current safety posture
-python -m axiom.cli config
+make check      # ruff + mypy --strict + 1,296 tests
 ```
 
-`--synthetic` runs against the deterministic generator, so everything works with no
-network and no credentials. Every output produced this way is stamped
-**SYNTHETIC** and refuses to present itself as performance.
-
-For real data:
+With Alpaca credentials (`APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` — the free
+paper keys are enough for market data):
 
 ```bash
-python -m pip install -e ".[yfinance]"
-python -m axiom.cli analyse --symbol SPY --timeframe 1d --days 365
+# A survivorship-free US equity universe: ~11,700 names including the ones
+# that stopped trading. Takes about twenty minutes.
+python -m scripts.cache_pit_universe --out data/pit
+
+# What deleting the failures was worth
+python -m scripts.survivorship_study --root data/pit
+
+# The sixth campaign, on the honest universe
+python -m scripts.low_turnover_study --pit-root data/pit
 ```
 
 ---
 
-## Architecture
+## The guarantees
 
-```
-axiom.core        domain types, validated OHLCV series, session clock, provenance, settings
-axiom.data        provider abstraction + adapters (CSV, yfinance, synthetic, OpenBB*)
-axiom.ict         ── the proprietary alpha engine ──
-                  swings · structure (BOS/CHoCH/MSS) · fair value gaps · order blocks
-                  liquidity pools & sweeps · dealing ranges & OTE · SMT divergence
-axiom.quant       Gaussian HMM and causal market-regime detection
-axiom.research    strategy search: walk-forward, deflated Sharpe, PBO
-axiom.strategy    signal generation — ICT setups, quant families, regime gating
-axiom.risk        risk-first position sizing, hard limits, kill switch
-axiom.execution   order model, simulated venue, routing choke point
-axiom.portfolio   positions and P&L accounting
-axiom.backtest    event-driven backtester and performance metrics
-axiom.agents      Research → Debate → Backtest → Risk → Review pipeline
-axiom.terminal    the operator terminal
-```
+### No lookahead
 
-Read [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the design decisions and their rationale,
-and [`docs/ICT_METHODOLOGY.md`](docs/ICT_METHODOLOGY.md) for how each ICT concept is formalised.
+Every feature carries `origin_index` (where it sits) and `confirmed_index` (the
+first bar it could be *known*). They differ constantly. `StrategyContext`
+filters on the second, so a strategy cannot read a feature the market had not
+yet formed. `Panel.history(i)` has an exclusive upper bound, and
+`generate_checked` raises `LookaheadError` on a mis-stamped signal.
 
-\* OpenBB is AGPL-3.0 and deliberately quarantined. See [`docs/LICENSING.md`](docs/LICENSING.md).
+The property is tested by construction rather than asserted: scoring a bar on a
+panel extended with later data must produce an identical signal.
 
----
+### No invented numbers
 
-## The three guarantees
-
-### 1. No lookahead
-
-Every ICT feature carries two positions: `origin_index` (where it sits on the chart) and
-`confirmed_index` (the first bar at which it could be *known*). They differ constantly — a
-swing high of strength 3 is only confirmed three bars later; an order block is only
-identifiable once the displacement leg breaks structure.
-
-`StrategyContext` filters exclusively on `confirmed_index`, so a strategy **cannot** read a
-feature the market had not yet formed. The property is tested directly: analysing a prefix
-of the tape must produce the same features as filtering a full-history analysis.
-
-### 2. No invented numbers
-
-Every `OHLCVSeries` carries a `Provenance` record. Synthetic and mock data are permanently
-tainted — deriving, resampling, or cleaning them cannot launder them into evidence:
+Every series carries a `Provenance`. Synthetic and mock data are permanently
+tainted — deriving, resampling or cleaning cannot launder them:
 
 ```python
 Provenance.synthetic("gen").derive("resample").derive("clean").is_evidential
 # False
 ```
 
-Any performance report built from non-evidential data renders a warning banner and answers
-`False` to `report.is_evidence`.
+A panel takes the *weakest* provenance of its constituents, because a
+cross-sectional signal mixes every column into every output.
 
-### 3. Searching many strategies does not manufacture an edge
+### Searching many strategies does not manufacture an edge
 
-Testing 500 candidates and keeping the best produces an impressive Sharpe *even
-on pure noise* — with 500 trials the expected maximum is around 2.5–3.0 from
-selection alone. `StrategyLab` therefore counts every candidate as a trial and
-ranks on the **deflated Sharpe**, the probability the result beats the best of
-that many coin flips. It also reports **Probability of Backtest Overfitting**,
-which asks the separate question of whether the selection *procedure* finds
-strategies that generalise at all.
+500 candidates on pure noise produce a best-of Sharpe around 2.5–3.0 from
+selection alone. Every candidate counts as a trial, results are ranked on
+deflated Sharpe, and PBO asks separately whether the selection *procedure*
+generalises.
 
-A search that concludes *"nothing survived"* has done its job. That is the
-expected outcome of most searches.
+A search concluding *"nothing survived"* has done its job. It is the expected
+outcome, and it has been the actual outcome six times.
 
-### 4. Risk budgets are upper bounds, not estimates
+### Results are checked against the outside view
 
-Sizing budgets for the entry gapping away from its intended price *and* for the
-stop gapping through its trigger, and the venue expires entries that would fill
-beyond tolerance. On the synthetic fixture this moved the worst trade from
-**7.20× the per-trade budget to 0.57×**.
+61 published systematic strategies: max Sharpe 0.892, median 0.354, 15%
+negative, **none above 1.0**. A candidate reporting 1.02 is flagged as needing
+an explanation rather than celebrated. In the sixth campaign it got one — the
+result inverted on a held-out universe.
 
-The two halves are not symmetric, and the docs say so: an entry that gaps can be
-refused, because you are not in the position yet. A stop that gaps cannot be —
-no order type prevents it. That residual is reported, not hidden.
+### History contains the companies that failed
 
-### 5. No accidental execution
+The universe is point-in-time. A name that had not yet listed and one that has
+already died are both untradable, delisting forces a liquidation at the last
+close, and the liquidity ranking that selects the universe uses only volume
+observed *before* the selection date.
 
-* The **kill switch** is checked first in both the risk manager and the router, and cannot be overridden by any argument, mode, or strategy.
-* `OrderRouter` **refuses to be constructed** around a live venue unless the platform is in live mode with `AXIOM_LIVE_TRADING_CONFIRMED=I_UNDERSTAND_THE_RISK`.
-* The agent pipeline has **no execute stage**. It terminates in a human approval request.
+This matters more than it sounds. Silicon Valley Bank stops trading on
+2023-03-09 and First Republic on 2023-04-28; a universe built from today's
+liquid tickers contains neither, at any point in their history.
 
----
+### Costs are a function of size
 
-## Costs are never optional
+A flat basis-point charge prices a thousand-dollar trade and a hundred-million-
+dollar trade identically, which hides the only question a desk must answer: how
+much money can this take? The model is commission + half-spread + square-root
+impact, so capacity curves are computable — and the honest finding was that it
+is **harsher** than the flat 10bp it replaced.
 
-The simulated venue is deliberately pessimistic:
+### Nothing reaches a live venue by accident
 
-| Behaviour | Choice | Why |
-|---|---|---|
-| Market order fill | Next bar's **open**, never the signal bar's close | Filling on the signal bar earns money that was never available |
-| Slippage | Applied against the order, every time | Crossing the spread is not free |
-| Commission | Per unit, both sides | |
-| Limit orders | Must trade **through**, not merely touch | Touching does not guarantee queue priority |
-| Stops that gap | Fill at the open, worse than the trigger | This is what actually happens |
-| Same-bar stop *and* target | **Stop assumed first** | The alternative inflates results |
-
----
-
-## Risk model
-
-Sizing is risk-first: position size is derived from the distance to the stop, so cash at
-risk is constant across setups. A strategy that cannot state its stop cannot be sized.
-
-Enforced limits — every rejection is explained in plain language:
-
-* max risk per trade, as % of equity
-* daily loss limit (halts trading for the day)
-* consecutive-loss circuit breaker (resets daily)
-* max concurrent positions
-* max gross exposure
-* the kill switch
-
-```
-REJECTED qty=0 — a single ES unit carries $250,000 notional, which alone exceeds
-the $200,000 gross exposure cap (200% of $100,000 equity). This instrument is
-untradable at this account size — raise max_gross_exposure_pct or the account equity
-```
+The kill switch is checked first in both the risk manager and the router.
+`OrderRouter` refuses construction around a live venue without
+`AXIOM_LIVE_TRADING_CONFIRMED=I_UNDERSTAND_THE_RISK`. Live credentials never
+fall back to an unscoped environment variable. The agent pipeline has no execute
+stage. Research cannot promote straight to live.
 
 ---
 
-## Development
+## Architecture
 
-```bash
-make dev      # install with dev extras
-make test     # pytest
-make lint     # ruff
-make type     # mypy --strict
-make check    # all three
+```
+axiom.core        domain types, validated series, provenance, session clock
+axiom.data        providers, adapters, and point-in-time universes
+axiom.ict         structural alpha engine — swings, BOS/CHoCH, FVGs, order
+                  blocks, liquidity sweeps, dealing ranges, SMT divergence
+axiom.alpha       cross-sectional agents, low-turnover factor families, ensemble
+axiom.ml          triple-barrier labelling, purged K-fold, meta-labelling
+axiom.quant       causal HMM regime detection
+axiom.research    walk-forward, deflated Sharpe, PBO, plausibility priors,
+                  turnover control, capacity curves
+axiom.strategy    signal generation
+axiom.risk        risk-first sizing, hard limits, kill switch
+axiom.portfolio   positions, P&L, portfolio risk, multi-strategy allocation
+axiom.execution   order model, venues, cost models, transaction cost analysis
+axiom.store       the desk's memory — orders, fills, halts, backups
+axiom.desk        the live loop, guards, compliance, registry, supervisor
+axiom.ops         logs, metrics, health, alerts and their delivery, secrets
+axiom.backtest    event-driven backtester
+axiom.agents      Research → Debate → Backtest → Risk → Review
+axiom.terminal    the operator terminal
 ```
 
-The test suite covers domain invariants, ICT geometry on handcrafted fixtures, the
-anti-lookahead properties, risk limits, the fill model, and end-to-end backtest integrity.
+Design decisions: [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
+Running it: [`docs/OPERATIONS.md`](docs/OPERATIONS.md).
+
+---
+
+## The research record
+
+Every campaign, and why it failed. These are the point of the project.
+
+| study | finding |
+|---|---|
+| [`REAL_DATA_FINDINGS.md`](docs/REAL_DATA_FINDINGS.md) | ICT features show zero lift over a meaningless control band; sweeps lean the wrong way in all four datasets |
+| [`SWEEP_CONTINUATION_STUDY.md`](docs/SWEEP_CONTINUATION_STUDY.md) | no edge; also uncovered a detector that emitted zero trades for a year |
+| [`SEASONALITY_STUDY.md`](docs/SEASONALITY_STUDY.md) | the dispersion trap — a homogeneous candidate set *lowers* the deflated-Sharpe bar |
+| [`CROSS_SECTIONAL_STUDY.md`](docs/CROSS_SECTIONAL_STUDY.md) | every candidate above 30× annual turnover lost money |
+| [`TURNOVER_AND_CAPACITY.md`](docs/TURNOVER_AND_CAPACITY.md) | **the one thing that replicated**: hysteresis is worth ~0.45 Sharpe and ~5× capacity out of sample. It did not manufacture an edge |
+| [`LOW_TURNOVER_STUDY.md`](docs/LOW_TURNOVER_STUDY.md) | slow factors are genuinely cheap to trade (0.8–2.5× turnover) and still produced nothing; the best discovery result inverted out of universe |
+
+Two methodological lessons worth extracting:
+
+**PBO cannot see universe overfitting.** It reshuffles folds within one
+universe, so it detects overfitting to a *time window* and is blind to
+overfitting to a *set of names*. In the sixth campaign PBO read 24%
+("generalises acceptably") and the transfer failed completely.
+
+**Bugs found by tests that pin mechanism, not output.** A residual-momentum
+agent was ranking floating-point noise because OLS residuals with an intercept
+sum to zero. A risk-parity solver oscillated with period two and silently
+returned its equal-weight starting point. Both passed every contract test they
+had, and both were caught by a test that asserted what the code was *for*.
 
 ---
 
 ## Status
 
-Foundation complete and working end to end. See [`docs/ROADMAP.md`](docs/ROADMAP.md) for what
-is built, what is deliberately stubbed, and what comes next.
+The infrastructure is ready for capital. The research is not.
 
-**The ICT features have now been measured on real market data, and they did not beat their
-controls.** See [`docs/REAL_DATA_FINDINGS.md`](docs/REAL_DATA_FINDINGS.md). The measurement is
-crypto-only, so every session-anchored concept — killzones, judas swings, Power of Three, the
-Silver Bullet window — remains untested. The bundled strategies are reference implementations of
-the methodology, not proven edges.
+That asymmetry is deliberate and worth stating plainly: enterprise-grade
+plumbing around a zero-expectancy signal is a reliable way to lose money on
+schedule. The promotion gate exists precisely so that decision is not made by
+whoever is feeling optimistic.
+
+The bottleneck is now data, not machinery. Six campaigns is enough evidence for
+that. Value and quality — the strongest low-turnover families in the literature
+— cannot be tested at all without a fundamentals feed, and building a seventh
+price-based factor search would be answering a question already asked.
+
+See [`docs/OPERATIONS.md`](docs/OPERATIONS.md) for the current gap list.

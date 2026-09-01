@@ -13,6 +13,7 @@ generated bars is a smoke test, never a track record.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import Enum
@@ -113,6 +114,34 @@ class Provenance:
         if self.transforms:
             parts.append("transforms=" + ">".join(self.transforms))
         return " ".join(parts)
+
+
+#: Trust ordering, least to most. Used when several sources are combined.
+_KIND_TRUST: dict[DataKind, int] = {
+    DataKind.SYNTHETIC: 0,
+    DataKind.MOCK: 1,
+    DataKind.DERIVED: 2,
+    DataKind.REAL: 3,
+}
+
+
+def weakest_kind(kinds: Iterable[DataKind]) -> DataKind:
+    """The least trustworthy kind among several inputs.
+
+    Anything that combines sources — a cross-sectional panel, an ensemble of
+    signals, a stitched series — must take the minimum rather than the majority
+    or the maximum. One synthetic input contaminates every output it touches,
+    and a combining step that reported the *best* of its inputs would be
+    precisely the mechanism by which generated numbers acquire a track record.
+
+    Raises:
+        ValueError: if ``kinds`` is empty — there is no safe default here, and
+            silently returning REAL would invent trust that nothing earned.
+    """
+    ordered = list(kinds)
+    if not ordered:
+        raise ValueError("cannot take the weakest kind of no inputs")
+    return min(ordered, key=lambda k: _KIND_TRUST.get(k, 0))
 
 
 def require_real_data(provenance: Provenance, context: str) -> None:

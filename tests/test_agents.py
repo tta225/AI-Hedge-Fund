@@ -56,12 +56,27 @@ class TestPipeline:
             ),
         )
 
-    def test_runs_all_five_roles_in_order(self, synthetic_series: OHLCVSeries) -> None:
+    def test_every_seat_reports(self, synthetic_series: OHLCVSeries) -> None:
+        """Reports come back in declaration order regardless of finish order.
+
+        Stages run concurrently within a level, so a run that returned them in
+        completion order would reorder itself between runs and break both the
+        rendered report and the audit digest.
+        """
         result = self._run(synthetic_series)
+        # ALPHA is absent by design: no panel was supplied, so there is no
+        # cross-section to read and the seat is not seated.
+        assert {r.role for r in result.reports} == set(AgentRole) - {AgentRole.ALPHA}
         assert [r.role for r in result.reports] == [
-            AgentRole.RESEARCH, AgentRole.DEBATE, AgentRole.BACKTEST,
-            AgentRole.RISK, AgentRole.REVIEW,
+            AgentRole.REGIME, AgentRole.RESEARCH, AgentRole.BACKTEST,
+            AgentRole.PORTFOLIO, AgentRole.DEBATE, AgentRole.EXECUTION,
+            AgentRole.REVIEW, AgentRole.RED_TEAM, AgentRole.RISK,
         ]
+
+    def test_the_order_is_stable_across_runs(self, synthetic_series: OHLCVSeries) -> None:
+        first = [r.role for r in self._run(synthetic_series).reports]
+        second = [r.role for r in self._run(synthetic_series).reports]
+        assert first == second
 
     def test_backtest_agent_reports_measured_metrics(
         self, synthetic_series: OHLCVSeries
@@ -83,16 +98,35 @@ class TestPipeline:
         self, synthetic_series: OHLCVSeries
     ) -> None:
         result = self._run(synthetic_series)
-        assert result.approval_required
         assert "HUMAN APPROVAL REQUIRED" in result.render()
         assert "cannot place an order" in result.render()
 
+    def test_synthetic_data_is_blocked_by_the_mandate(
+        self, synthetic_series: OHLCVSeries
+    ) -> None:
+        """Generated bars can never reach a human as a trade candidate."""
+        result = self._run(synthetic_series)
+        assert result.blocked
+        assert any(b.rule == "evidential_data" for b in result.decision.breaches)
+
     def test_pipeline_has_no_execute_stage(self) -> None:
-        """The safety property, asserted structurally."""
+        """The safety property, asserted structurally.
+
+        No role may name an execution seat, and the pipeline may not expose a
+        method that routes anything. Both are checked because the graph is now
+        assembled from a registry — a new seat is a config change, and this is
+        what stops one from quietly becoming an order path.
+        """
         assert not hasattr(AgentPipeline, "execute")
-        assert AgentRole.__members__.keys() == {
-            "RESEARCH", "DEBATE", "BACKTEST", "RISK", "REVIEW"
-        }
+        assert not any(
+            name in {"EXECUTE", "ORDER", "ROUTE", "TRADE"}
+            for name in AgentRole.__members__
+        )
+        # EXECUTION analyses cost and feasibility; it must not route.
+        from axiom.agents.roles import ExecutionAgent
+
+        assert not hasattr(ExecutionAgent, "execute")
+        assert not hasattr(ExecutionAgent, "submit")
 
     def test_narrative_is_empty_without_an_llm(
         self, synthetic_series: OHLCVSeries

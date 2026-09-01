@@ -26,8 +26,13 @@ alpaca = ["alpaca-py>=0.21"]
 crypto = ["ccxt>=4.3"]
 # Load your own training data from the Hugging Face Hub.
 huggingface = ["datasets>=2.20"]
-# AI agent layer (Research / Debate / Backtest / Risk / Review).
+# AI agent layer (the nine-seat analyst desk).
 agents = ["anthropic>=0.34"]
+# Deep sequence models (transformer, recurrent ensemble). Optional because
+# torch is ~2GB and nothing in the core platform imports it.
+deep = ["torch>=2.3"]
+# Read-only HTTP surface over the agent desk and the audit log.
+service = ["fastapi>=0.111", "uvicorn>=0.30"]
 # NOTE: OpenBB is AGPL-3.0. It is deliberately NOT a core dependency and is
 # isolated behind axiom.data.providers.openbb_provider. See docs/LICENSING.md
 # before enabling this extra in anything you intend to distribute.
@@ -78,4 +83,27 @@ strict = true
 warn_unreachable = true
 disallow_untyped_defs = true
 ignore_missing_imports = true
-files = ["src/axiom"]
+# scripts/ is checked too. It was not, and that is how a parameter named
+# `batch` came to shadow a local dict of the same name inside its own loop —
+# a crash on the second iteration that no test covered, because these are
+# research entry points nothing imports.
+files = ["src/axiom", "scripts"]
+
+# Optional extras are not installed in the default dev environment, so their
+# symbols resolve to Any and every construct built on them looks untyped.
+# Scoping the relaxation to these two modules keeps `strict` everywhere the
+# platform's own logic lives.
+[[tool.mypy.overrides]]
+# torch.nn.Module subclasses are defined inside a function so the import stays
+# optional; without torch installed mypy cannot see the base class.
+module = "axiom.models.sequence"
+disallow_subclassing_any = false
+warn_return_any = false
+# `nn` is torch.nn bound at call time, so mypy cannot resolve `nn.Module`
+# as a base class without torch present.
+disable_error_code = ["name-defined"]
+
+[[tool.mypy.overrides]]
+# FastAPI's route decorators are untyped when FastAPI is absent.
+module = "axiom.service.api"
+disallow_untyped_decorators = false

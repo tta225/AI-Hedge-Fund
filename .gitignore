@@ -20,3 +20,17 @@ runs/
 .DS_Store
 .idea/
 .vscode/
+data/equities/
+data/equities_confirm/
+data/desk.db*
+
+# Cached market data. Rebuild with scripts/cache_pit_universe.py — the cache is
+# ~50MB and reproducible from the API, so it does not belong in the history.
+# data/known_delistings.txt is NOT ignored: it is a curated input, not output.
+data/pit/
+data/equities/
+data/equities_confirm/
+data/backups/
+*.db
+*.db-wal
+*.db-shm

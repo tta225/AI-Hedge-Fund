@@ -1,0 +1,34 @@
+# US equities whose bars Alpaca still serves but whose asset record it has
+# purged, so they cannot be discovered from the /v2/assets endpoint at all.
+#
+# WHY THIS FILE EXISTS
+# The point-in-time universe is built by listing every active and inactive US
+# equity and deriving each name's trading interval from its bars. That misses a
+# specific and important class: names whose metadata Alpaca has deleted
+# outright. Silicon Valley Bank, First Republic, Twitter, VMware and Activision
+# all fall into it — precisely the large-cap failures and acquisitions whose
+# absence flatters a backtest most, because they are exactly the names a
+# liquidity-ranked universe would have held.
+#
+# HOW IT WAS ASSEMBLED, AND WHAT THAT MEANS
+# Candidate tickers were written down from knowledge of large US delistings and
+# acquisitions between 2020 and 2026, then each was probed against the bars API
+# and kept only if bars came back. So the list is *verified* — every entry is a
+# real security with real bars — but it is **not exhaustive**, and its coverage
+# skews toward names large enough to be remembered.
+#
+# That residual bias points the same way as the bias being corrected: whatever
+# failures are still missing were, on average, smaller and less liquid than the
+# ones recovered. Results built on this universe are therefore still an upper
+# bound — a much tighter one, with the large-cap failures now present.
+#
+# Entries that turn out to be renames rather than delistings (a ticker that
+# still prints today) are harmless: the listing interval comes from the bars,
+# so a name still trading is marked alive regardless of why it is listed here.
+ABMD AJRD AKUS ALTR ALXN AMRS ANSS ARNA ARNC ATC ATER ATVI BBBY BHVN BIG
+CDAY CDK CERE CHNG CLDR CONE COUP CREE CTLT CTXS CVET CXO DISCA DISH ENDP
+ETRN FISV FIXX FLIR FLXN FRC FSR GBT GOEV GRUB HTZ HZNP ICPT IMGO INFO IRNT
+JNPR KSU LTHM MANT MDC MDLA MIME MNDT MRO MXIM MYL NEWR NKLA NLSN NUAN NUVA
+PBCT PFPT PING PNM POLY PRTY PRVB PSFE PXD QTS RAD RE REV RP SAIL SAVE SBNY
+SGEN SIMO SIVB SJI SKLZ SPLK SPWR SRCL STOR SUMO SWN TCDA TEN TIF TLND TUP
+TWNK TWTR VG VIAC VMW WBA WOLF WPX XEC ZEN ZGNX ZI

@@ -447,3 +447,26 @@ class TestEngine:
         assert confluence_score(state, price, Direction.NEUTRAL) == 0.0
         for direction in (Direction.BULLISH, Direction.BEARISH):
             assert 0.0 <= confluence_score(state, price, direction) <= 1.0
+
+    def test_close_back_requirement_is_configurable(
+        self, synthetic_series: OHLCVSeries
+    ) -> None:
+        """The default makes ``closed_back_inside`` universally True.
+
+        That is ICT's definition of a sweep — a rejection, not a breakout — and
+        it is what every base-rate measurement in this repository was made
+        against. It also means a strategy filtering on the field under the
+        default config filters its whole population away, so the switch has to
+        be reachable for that field to mean anything.
+        """
+        from axiom.ict.engine import ICTConfig
+
+        default = ICTEngine().analyse(synthetic_series)
+        assert default.sweeps
+        assert all(s.closed_back_inside for s in default.sweeps)
+
+        permissive = ICTEngine(
+            ICTConfig(sweep_require_close_back=False)
+        ).analyse(synthetic_series)
+        assert len(permissive.sweeps) > len(default.sweeps)
+        assert any(not s.closed_back_inside for s in permissive.sweeps)

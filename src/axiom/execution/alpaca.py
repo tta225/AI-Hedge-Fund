@@ -203,15 +203,34 @@ class AlpacaVenue(ExecutionVenue):
         return f"{symbol}/USD"
 
     @staticmethod
-    def local_symbol(venue_symbol: str) -> str:
+    def local_symbol(venue_symbol: str, *, is_crypto: bool = False) -> str:
         """Invert :meth:`venue_symbol` for reading positions back.
 
-        Alpaca reports crypto positions as ``BTC/USD`` while the platform keys
-        everything by ``BTC-USD``. Without this the reconciler compares two
-        spellings of the same holding, finds neither in the other's book, and
-        reports both a phantom and an unknown position.
+        Alpaca spells the same crypto holding **two different ways**, and this
+        is not obvious until a real fill lands. ``/v2/orders`` returns
+        ``BTC/USD``; ``/v2/positions`` returns ``BTCUSD``, with no separator at
+        all. The platform keys everything as ``BTC-USD``.
+
+        Handling only the slashed form — which is what this did — leaves the
+        reconciler comparing ``BTCUSD`` from the broker against ``BTC-USD`` in
+        the store, finding neither in the other's book, and reporting both a
+        phantom and an unknown position. The desk then halts, on every tick,
+        forever, and the halt reason describes a discrepancy that does not
+        exist. A crypto desk could never have traded.
+
+        ``is_crypto`` comes from Alpaca's own ``asset_class`` field rather than
+        from guessing at the string, because the separator-free spelling is
+        genuinely ambiguous: an equity ticker ending in ``USD`` is rare but not
+        impossible, and splitting it would invent a currency pair.
         """
-        return venue_symbol.replace("/", "-").upper()
+        symbol = venue_symbol.upper()
+        if "/" in symbol:
+            return symbol.replace("/", "-")
+        if is_crypto:
+            for candidate in _CRYPTO_QUOTES:
+                if symbol.endswith(candidate) and len(symbol) > len(candidate):
+                    return f"{symbol[: -len(candidate)]}-{candidate}"
+        return symbol
 
     # --- HTTP --------------------------------------------------------------
 
@@ -289,7 +308,10 @@ class AlpacaVenue(ExecutionVenue):
             if quantity > 0 and str(row.get("side", "long")).lower() == "short":
                 quantity = -quantity
             if quantity != 0.0:
-                out[self.local_symbol(str(row.get("symbol", "")))] = quantity
+                is_crypto = str(row.get("asset_class", "")).lower() == "crypto"
+                out[self.local_symbol(str(row.get("symbol", "")), is_crypto=is_crypto)] = (
+                    quantity
+                )
         return out
 
     # --- orders ------------------------------------------------------------
@@ -326,6 +348,16 @@ class AlpacaVenue(ExecutionVenue):
 
         has_bracket = order.stop_loss is not None or order.take_profit is not None
         time_in_force = _TIME_IN_FORCE[order.time_in_force]
+
+        # Crypto trades continuously, so Alpaca has no notion of a "day" order
+        # on it and rejects one with `invalid crypto time_in_force` — a 422
+        # that reads like a malformed request rather than the one-word mapping
+        # problem it is. DAY is translated to GTC, which is what a day order
+        # means on a market that never closes; FOK is left alone because Alpaca
+        # accepts it and it expresses something GTC does not.
+        if order.instrument.asset_class is AssetClass.CRYPTO and time_in_force == "day":
+            time_in_force = "gtc"
+
         if has_bracket and time_in_force in {"ioc", "fok"}:
             raise ExecutionError(
                 f"{self.name}: a bracketed order cannot use "

@@ -448,3 +448,59 @@ class TestErrorMessages:
 
     def test_an_unknown_code_has_no_hint(self) -> None:
         assert AlpacaVenue._hint(500) == ""
+
+
+class TestLiveApiRegressions:
+    """Three bugs that only a real fill exposed.
+
+    Every one of these passed the stubbed tests above and failed against the
+    actual API. They are grouped so it stays obvious that the stub is not a
+    substitute for having sent one order.
+    """
+
+    def test_crypto_day_order_becomes_gtc(self) -> None:
+        """Alpaca rejects `time_in_force=day` on crypto.
+
+        The market never closes, so a day order has no meaning there, and the
+        rejection is a 422 reading `invalid crypto time_in_force` — which looks
+        like a malformed request rather than a one-word mapping problem.
+        """
+        venue = AlpacaVenue(api_key="k", secret_key="s")
+        crypto = Order(
+            instrument=get_instrument("BTC-USD"),
+            side=Side.BUY,
+            quantity=0.001,
+            time_in_force=TimeInForce.DAY,
+        )
+        assert venue._order_body(crypto)["time_in_force"] == "gtc"
+
+    def test_equity_day_order_is_untouched(self) -> None:
+        """The control: equities keep DAY, where it is both valid and meaningful."""
+        venue = AlpacaVenue(api_key="k", secret_key="s")
+        equity = Order(
+            instrument=get_instrument("SPY"),
+            side=Side.BUY,
+            quantity=1,
+            time_in_force=TimeInForce.DAY,
+        )
+        assert venue._order_body(equity)["time_in_force"] == "day"
+
+    def test_crypto_position_symbol_has_no_separator(self) -> None:
+        """Alpaca spells one holding two ways.
+
+        /v2/orders and the fill activities return ``BTC/USD``; /v2/positions
+        returns ``BTCUSD``. Handling only the slashed form left the reconciler
+        comparing ``BTCUSD`` against ``BTC-USD``, reporting both a phantom and
+        an unknown position, and halting the desk on every tick forever.
+        """
+        assert AlpacaVenue.local_symbol("BTC/USD") == "BTC-USD"
+        assert AlpacaVenue.local_symbol("BTCUSD", is_crypto=True) == "BTC-USD"
+        assert AlpacaVenue.local_symbol("ETHUSDT", is_crypto=True) == "ETH-USDT"
+
+    def test_an_equity_ticker_is_never_split(self) -> None:
+        """The separator-free spelling is ambiguous, so the split is gated on
+        Alpaca's own asset_class rather than on guessing at the string."""
+        assert AlpacaVenue.local_symbol("SPY") == "SPY"
+        # A hypothetical equity ending in a quote currency must survive intact.
+        assert AlpacaVenue.local_symbol("PSUSD") == "PSUSD"
+        assert AlpacaVenue.local_symbol("PSUSD", is_crypto=False) == "PSUSD"

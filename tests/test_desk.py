@@ -705,3 +705,69 @@ class TestPortfolioRiskIntegration:
         scaled.tick(context)
         assert scaled_venue.submitted[0].quantity <= plain_venue.submitted[0].quantity
         plain_store.close()
+
+
+class TestFeesTakenInKind:
+    """Alpaca charges its crypto fee in kind, and reports it nowhere.
+
+    An order for 0.0002 BTC returns a fill of 0.0002 and leaves a position of
+    0.0001995. Neither the fill activity nor the order record carries a fee
+    field, so a desk deriving position from fills disagrees with the broker by
+    0.25% on every crypto trade — and halts on every reconciliation, forever.
+    """
+
+    def test_the_fee_gap_halts_under_an_absolute_tolerance(self) -> None:
+        """The observed failure, pinned. 5e-7 is fifty times the 1e-8 floor."""
+        result = reconcile_positions({"BTC-USD": 0.0002}, {"BTC-USD": 0.0001995})
+        assert result.should_halt
+        assert result.discrepancies[0].kind == "quantity_mismatch"
+
+    def test_a_relative_tolerance_absorbs_it(self) -> None:
+        result = reconcile_positions(
+            {"BTC-USD": 0.0002}, {"BTC-USD": 0.0001995}, relative_tolerance=0.0025
+        )
+        assert result.is_clean
+
+    def test_relative_tolerance_is_off_by_default(self) -> None:
+        """Nothing is silently loosened: a desk opts in per venue."""
+        assert reconcile_positions({"X": 100.0}, {"X": 99.9}).should_halt
+
+    def test_it_scales_with_the_position_rather_than_being_a_flat_pass(self) -> None:
+        """The property an absolute tolerance cannot have. The same 0.25%
+        allowance must catch a whole missing share on a small position."""
+        # 0.25% of 1000 is 2.5, so a 2-share drift is absorbed...
+        assert reconcile_positions(
+            {"X": 998.0}, {"X": 1000.0}, relative_tolerance=0.0025
+        ).is_clean
+        # ...while the same 2-share drift on a 10-share position is not.
+        assert reconcile_positions(
+            {"X": 8.0}, {"X": 10.0}, relative_tolerance=0.0025
+        ).should_halt
+
+    def test_a_tolerance_that_disables_the_check_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="disables reconciliation"):
+            reconcile_positions({"X": 1.0}, {"X": 1.0}, relative_tolerance=1.0)
+
+    def test_negative_relative_tolerance_is_refused(self) -> None:
+        with pytest.raises(ValueError, match="non-negative"):
+            reconcile_positions({"X": 1.0}, {"X": 1.0}, relative_tolerance=-0.1)
+
+    def test_an_unknown_position_is_not_excused_by_any_tolerance(self) -> None:
+        """A relative allowance is a fraction of the broker's quantity, so a
+        position the desk knows nothing about can never be tolerated away."""
+        result = reconcile_positions({}, {"SPY": 10.0}, relative_tolerance=0.5)
+        assert result.should_halt
+
+    def test_dust_left_by_an_in_kind_fee_is_not_covered(self) -> None:
+        """The limitation, pinned so it cannot be forgotten.
+
+        After the crypto position is closed the desk's fills net to +5e-07
+        while the broker reports zero. A relative allowance is a fraction of
+        the broker's quantity, and a fraction of zero is zero, so the dust
+        halts the desk permanently however the tolerance is set.
+        """
+        result = reconcile_positions(
+            {"BTC-USD": 5e-07}, {"BTC-USD": 0.0}, relative_tolerance=0.0025
+        )
+        assert result.should_halt
+        assert result.discrepancies[0].kind == "phantom_position"

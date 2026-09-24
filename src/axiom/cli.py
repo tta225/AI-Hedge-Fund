@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from pathlib import Path
 from typing import Any
 
 import typer
@@ -19,6 +20,7 @@ from axiom.data.base import BarRequest, ProviderError
 from axiom.data.providers import CSVProvider
 from axiom.data.registry import default_registry
 from axiom.data.synthetic import SyntheticProvider
+from axiom.execution.base import ExecutionError
 from axiom.ict.engine import ICTConfig, ICTEngine
 from axiom.portfolio.positions import Portfolio
 from axiom.quant.regime import RegimeModel
@@ -30,6 +32,11 @@ from axiom.strategy.quant_strategies import (
     MeanReversionZScore,
     TimeSeriesMomentum,
     VolatilityBreakout,
+)
+from axiom.strategy.seasonality import SeasonalityControl, TimeOfDaySeasonality
+from axiom.strategy.sweep_continuation import (
+    SweepContinuationStrategy,
+    SweepReversalControl,
 )
 from axiom.terminal.app import TerminalState, render
 
@@ -45,6 +52,10 @@ STRATEGIES: dict[str, type[Strategy]] = {
     "momentum": TimeSeriesMomentum,
     "mean-reversion": MeanReversionZScore,
     "vol-breakout": VolatilityBreakout,
+    "sweep-continuation": SweepContinuationStrategy,
+    "sweep-reversal-control": SweepReversalControl,
+    "seasonality": TimeOfDaySeasonality,
+    "seasonality-control": SeasonalityControl,
 }
 
 
@@ -185,32 +196,56 @@ def pipeline(
     synthetic: bool = typer.Option(False),
     seed: int = typer.Option(11),
     equity: float = typer.Option(250_000.0),
+    budget: float = typer.Option(5.0, help="Hard ceiling on model spend, USD."),
+    audit: str = typer.Option(
+        "data/audit/runs.jsonl", help="Append-only run log. Empty to disable."
+    ),
 ) -> None:
-    """Run the Research → Debate → Backtest → Risk → Review agent pipeline.
+    """Run the nine-seat agent desk over one instrument.
 
-    Terminates in a human approval request. It cannot place an order.
+    Regime, research, and backtest run first and concurrently; debate, red
+    team, execution, portfolio, risk, and review read their output. Terminates
+    in a human approval request, which the mandate may refuse to issue. It
+    cannot place an order under any configuration.
     """
     if strategy not in STRATEGIES:
         console.print(f"[red]Unknown strategy {strategy!r}.[/red]")
         raise typer.Exit(code=1)
 
+    from axiom.agents.audit import AuditLog
+    from axiom.agents.runtime import LLMBudget, LLMRuntime
+
     series = _load_series(symbol, timeframe, days, synthetic, seed)
     settings = get_settings()
-    if not settings.agents.enabled:
+    runtime = None
+    if settings.agents.enabled:
+        runtime = LLMRuntime(
+            model=settings.agents.agent_model,
+            api_key=settings.agents.anthropic_api_key,
+            budget=LLMBudget(max_cost_usd=budget),
+        )
+    else:
         console.print(
             "[yellow]No ANTHROPIC_API_KEY set — running in deterministic mode. "
             "All measured facts are still computed; only the narrative is "
             "omitted.[/yellow]\n"
         )
 
-    outcome = AgentPipeline(settings.agents).run(
+    outcome = AgentPipeline(
+        settings.agents,
+        runtime=runtime,
+        audit_log=AuditLog(audit) if audit else None,
+    ).run(
         series,
         STRATEGIES[strategy](),
         risk_settings=RiskSettings(
             account_equity=equity, max_gross_exposure_pct=2000.0
         ),
+        settings=settings,
     )
     console.print(outcome.render())
+    if outcome.record is not None and audit:
+        console.print(f"\n[dim]recorded as {outcome.record.short_digest} in {audit}[/dim]")
 
 
 @app.command()
@@ -558,6 +593,397 @@ def cache_data(
             f"[green]✓[/green] {symbol:<9} {timeframe:<4} "
             f"{len(series):>6,} bars → {path}"
         )
+
+
+@app.command("desk-status")
+def desk_status(
+    db: str = typer.Option("data/desk.db", help="Desk database."),
+) -> None:
+    """What the desk believes right now: halts, open orders, positions, equity.
+
+    The first thing to run after a restart, and the first thing to run when
+    something looks wrong. It reads and never writes, so it is safe to run
+    against a live desk.
+    """
+    from axiom.store import Store
+
+    try:
+        store = Store(db)
+    except Exception as exc:
+        console.print(f"[red]cannot open {db}: {exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    with store:
+        halts = store.active_halts()
+        if halts:
+            console.print(f"[red]HALTED — {len(halts)} uncleared[/red]")
+            for halt in halts:
+                console.print(f"  [red]{halt['reason']}[/red]: {halt['detail'][:120]}")
+        else:
+            console.print("[green]No active halts[/green]")
+
+        orders = store.open_orders()
+        console.print(f"\nOpen orders: {len(orders)}")
+        for order in orders:
+            console.print(
+                f"  #{order.id} {order.instrument.symbol} {order.side.value} "
+                f"{order.quantity:g} — {order.status.value} "
+                f"(filled {order.filled_quantity:g})"
+            )
+
+        positions = store.positions()
+        console.print(f"\nPositions: {len(positions)}")
+        for symbol, quantity in sorted(positions.items()):
+            console.print(f"  {symbol:<10} {quantity:+g}")
+
+        curve = store.equity_curve()
+        if curve.empty:
+            console.print("\nNo equity marks recorded.")
+        else:
+            peak = float(curve.max())
+            last = float(curve.iloc[-1])
+            drawdown = (peak - last) / peak * 100.0 if peak > 0 else 0.0
+            console.print(
+                f"\nEquity {last:,.2f} | peak {peak:,.2f} | "
+                f"drawdown {drawdown:.2f}% | {len(curve)} marks"
+            )
+
+
+@app.command("desk-halt")
+def desk_halt(
+    reason: str = typer.Argument(..., help="Why trading is being stopped."),
+    db: str = typer.Option("data/desk.db"),
+) -> None:
+    """Stop the desk. Survives restarts until explicitly cleared."""
+    import pandas as pd
+
+    from axiom.store import Store
+
+    with Store(db) as store:
+        halt_id = store.record_halt(reason, pd.Timestamp.now(tz="UTC"))
+    console.print(f"[red]Halt #{halt_id} recorded: {reason}[/red]")
+
+
+@app.command("desk-resume")
+def desk_resume(
+    halt_id: int = typer.Argument(..., help="Halt to clear (see desk-status)."),
+    confirm: str = typer.Option("", help="Type the halt id again to confirm."),
+    db: str = typer.Option("data/desk.db"),
+) -> None:
+    """Clear one halt. Requires confirmation, because resuming is the risky direction."""
+    if confirm != str(halt_id):
+        console.print(
+            f"[red]Refusing: pass --confirm {halt_id}. Clearing a halt without "
+            "understanding why it fired is how the same failure happens twice."
+            "[/red]"
+        )
+        raise typer.Exit(1)
+
+    import pandas as pd
+
+    from axiom.store import Store
+
+    with Store(db) as store:
+        matching = [h for h in store.active_halts() if int(h["id"]) == halt_id]
+        if not matching:
+            console.print(f"[yellow]No active halt #{halt_id}[/yellow]")
+            raise typer.Exit(1)
+        store.clear_halt(halt_id, pd.Timestamp.now(tz="UTC"))
+    console.print(f"[green]Halt #{halt_id} cleared[/green]")
+
+
+
+@app.command("meta-train")
+def meta_train(
+    strategy: str = typer.Option("sweep-continuation", help=f"One of: {', '.join(STRATEGIES)}"),
+    symbols: str = typer.Option("BTC-USD,ETH-USD,SOL-USD", help="Comma-separated."),
+    timeframe: str = typer.Option("1h"),
+    data_root: str = typer.Option("data/cache"),
+    threshold: float = typer.Option(0.5, help="Probability below which a signal is declined."),
+) -> None:
+    """Fit a meta-label filter on a strategy's own historical signals.
+
+    Reports out-of-sample precision against the unfiltered base rate, with the
+    standard error, so a lift can be read as evidence or as noise. A filter can
+    only ever decline trades, so the worst case here is trading less.
+    """
+    from axiom.ml.meta import train_meta_filter
+
+    if strategy not in STRATEGIES:
+        console.print(f"[red]Unknown strategy. One of: {', '.join(STRATEGIES)}[/red]")
+        raise typer.Exit(1)
+
+    for symbol in (s.strip() for s in symbols.split(",") if s.strip()):
+        try:
+            series = CSVProvider(data_root).fetch(
+                get_instrument(symbol), timeframe, days=10_000
+            )
+        except (ProviderError, FileNotFoundError) as exc:
+            console.print(f"[red]{symbol}: {exc}[/red]")
+            continue
+
+        console.print(f"\n[bold]{symbol} {timeframe}[/bold] — {len(series):,} bars")
+        try:
+            _, report = train_meta_filter(
+                STRATEGIES[strategy](), series, threshold=threshold
+            )
+        except ValueError as exc:
+            console.print(f"[yellow]  skipped: {exc}[/yellow]")
+            continue
+        console.print(report.render())
+
+
+@app.command("venue-check")
+def venue_check(
+    live: bool = typer.Option(False, help="Check the LIVE account instead of paper."),
+    db: str = typer.Option("data/desk.db", help="Desk database to reconcile against."),
+) -> None:
+    """Verify the broker connection and reconcile its book against ours.
+
+    Read-only: it places nothing and cancels nothing. Run it before arming the
+    desk and after any incident — a disagreement here is the single most
+    important thing to know before trading, because sizing against a wrong
+    position book produces a correct-looking number for the wrong account.
+    """
+    from axiom.execution.alpaca import AlpacaVenue
+    from axiom.store import Store, reconcile_positions
+
+    venue = AlpacaVenue(paper=not live)
+    if live:
+        console.print("[bold red]Checking the LIVE account — real money.[/bold red]")
+    console.print(venue.check_credentials())
+
+    try:
+        broker = venue.positions()
+        working = venue.working_orders()
+    except ExecutionError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    console.print(f"\nBroker positions: {len(broker)}")
+    for symbol, quantity in sorted(broker.items()):
+        console.print(f"  {symbol:<10} {quantity:+g}")
+    console.print(f"Broker working orders: {len(working)}")
+
+    if not Path(db).exists():
+        console.print(
+            f"\n[yellow]No desk database at {db} — nothing to reconcile "
+            "against yet.[/yellow]"
+        )
+        return
+
+    with Store(db) as store:
+        result = reconcile_positions(store.positions(), broker)
+    console.print()
+    if result.is_clean:
+        console.print(f"[green]{result.render()}[/green]")
+    else:
+        console.print(f"[red]{result.render()}[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("poll-fills")
+def poll_fills(
+    db: str = typer.Option("data/desk.db", help="Desk database."),
+    live: bool = typer.Option(False, help="Poll the LIVE account instead of paper."),
+    reconcile: bool = typer.Option(
+        True, help="Reconcile against the broker after booking."
+    ),
+) -> None:
+    """Book executions from the broker into the store, exactly once each.
+
+    The desk records what it sent; this records what happened. Without it the
+    position book drifts from the broker the moment anything fills, and
+    reconciliation correctly halts trading. Run it on a schedule alongside the
+    desk loop, or by hand after a session.
+    """
+    from axiom.desk.fills import FillPoller
+    from axiom.execution.alpaca import AlpacaVenue
+    from axiom.store import Store, reconcile_positions
+
+    venue = AlpacaVenue(paper=not live)
+    with Store(db) as store:
+        outcome = FillPoller(venue, store).poll()
+        console.print(outcome.render())
+        if outcome.error:
+            raise typer.Exit(1)
+        if outcome.unattributed:
+            console.print(
+                "[yellow]Unattributed fills were booked with no order link. "
+                "Bracket legs and manual trades land here legitimately; "
+                "anything else is worth explaining.[/yellow]"
+            )
+            for label in outcome.unattributed:
+                console.print(f"  {label}")
+
+        if not reconcile:
+            return
+        result = reconcile_positions(store.positions(), venue.positions())
+        console.print()
+        if result.is_clean:
+            console.print(f"[green]{result.render()}[/green]")
+        else:
+            console.print(f"[red]{result.render()}[/red]")
+            raise typer.Exit(1)
+
+
+@app.command("desk-health")
+def desk_health(
+    db: str = typer.Option("data/desk.db", help="Desk database."),
+    alert: bool = typer.Option(False, help="Emit alerts for anything failing."),
+    environment: str = typer.Option(
+        "paper",
+        help="Which credential scope the alert sinks resolve from: paper or live. "
+        "A paper desk must not be able to page whoever carries the live one.",
+    ),
+) -> None:
+    """Is the desk alive, and is what it believes still current?
+
+    Answered from the database alone, so a watchdog needs no access to the
+    running process — a wedged desk answers "fine" or does not answer at all,
+    and both look like a network problem from outside.
+
+    Exits 0 healthy, 1 degraded, 2 down, for use in a cron or a supervisor.
+    """
+    from axiom.ops import check_health
+    from axiom.ops.alerts import AlertRouter, alerts_for_health
+    from axiom.store import Store
+
+    if not Path(db).exists():
+        console.print(f"[red]No desk database at {db}[/red]")
+        raise typer.Exit(2)
+
+    with Store(db) as store:
+        report = check_health(store)
+
+    colour = {"ok": "green", "degraded": "yellow", "down": "red"}[report.status.value]
+    console.print(f"[{colour}]{report.render()}[/{colour}]")
+
+    if alert:
+        # Every sink the environment has credentials for, plus the console,
+        # which is the only one that still works when the network is what
+        # failed. Nothing configured means console alone, and `sinks` names
+        # what actually got wired so a silent misconfiguration is visible.
+        from axiom.ops.sinks import sinks_from_environment
+
+        sinks = sinks_from_environment(environment)
+        names = ", ".join(
+            getattr(sink, "__name__", type(sink).__name__) for sink in sinks
+        )
+        console.print(f"[dim]alert sinks: {names}[/dim]")
+        router = AlertRouter(sinks)
+        for item in alerts_for_health(report):
+            router.send(item)
+
+    raise typer.Exit(report.exit_code)
+
+
+@app.command("desk-run")
+def desk_run(
+    strategy: str = typer.Option("sweep-continuation", help=f"One of: {', '.join(STRATEGIES)}"),
+    symbol: str = typer.Option("BTC-USD"),
+    timeframe: str = typer.Option("1h"),
+    db: str = typer.Option("data/desk.db"),
+    cycles: int = typer.Option(1, help="Cycles to run. 0 runs until stopped."),
+    interval: float = typer.Option(60.0, help="Seconds between cycles."),
+    dry_run: bool = typer.Option(True, help="Record everything, send nothing."),
+    live: bool = typer.Option(False, help="Use the LIVE account instead of paper."),
+) -> None:
+    """Run the desk supervisor: poll fills, reconcile, decide, report.
+
+    Defaults to a single dry-run cycle, because the first thing anyone should
+    do with a trading loop is watch one iteration without it sending anything.
+    Pass --no-dry-run to arm it and --cycles 0 to run until stopped.
+    """
+    import pandas as pd
+
+    from axiom.data.registry import default_registry
+    from axiom.desk.calendar import AlwaysOpen, RegularHours
+    from axiom.desk.fills import FillPoller
+    from axiom.desk.runner import DeskConfig, DeskRunner
+    from axiom.desk.supervisor import Supervisor
+    from axiom.execution.alpaca import AlpacaVenue
+    from axiom.ict.engine import ICTEngine
+    from axiom.ops import setup_logging
+    from axiom.store import Store
+    from axiom.strategy.base import StrategyContext
+
+    if strategy not in STRATEGIES:
+        console.print(f"[red]Unknown strategy. One of: {', '.join(STRATEGIES)}[/red]")
+        raise typer.Exit(1)
+    if live and dry_run:
+        console.print("[yellow]--live with --dry-run sends nothing. That is fine.[/yellow]")
+
+    setup_logging()
+    instrument = get_instrument(symbol)
+    venue = AlpacaVenue(paper=not live)
+    built = STRATEGIES[strategy]()
+
+    def context_factory() -> StrategyContext | None:
+        """Fetch the newest bars and build a context, or None if unavailable."""
+        try:
+            series = default_registry().fetch_bars(
+                BarRequest.lookback(instrument, timeframe, days=30)
+            )
+        except ProviderError as exc:
+            console.print(f"[yellow]no data: {exc}[/yellow]")
+            return None
+        last = len(series) - 1
+        state = (
+            ICTEngine().analyse(series)
+            if built.requires_ict
+            else ICTEngine().analyse(series.tail(2))
+        )
+        return StrategyContext(
+            series=series,
+            index=last,
+            ict=state,
+            portfolio=portfolio,
+            timestamp=series.index[last],
+        )
+
+    settings = get_settings()
+    portfolio = Portfolio(starting_cash=settings.risk.account_equity)
+
+    with Store(db) as store:
+        runner = DeskRunner(
+            strategy=built,
+            venue=venue,
+            store=store,
+            risk=RiskManager(settings.risk),
+            portfolio=portfolio,
+            config=DeskConfig(
+                expected_interval=pd.Timedelta(
+                    seconds=Timeframe.parse(timeframe).seconds
+                ),
+                dry_run=dry_run,
+            ),
+            broker_positions=venue.positions,
+        )
+        calendar = (
+            AlwaysOpen()
+            if instrument.asset_class.value == "crypto"
+            else RegularHours.us_equities()
+        )
+        supervisor = Supervisor(
+            runner=runner,
+            store=store,
+            context_factory=context_factory,
+            poller=FillPoller(venue, store),
+            is_open=calendar.is_open,
+            interval=interval,
+        )
+        if cycles == 0:
+            supervisor.install_signal_handlers()
+            console.print("[bold]Running until stopped (SIGINT/SIGTERM).[/bold]")
+
+        mode = "DRY RUN" if dry_run else ("[red]LIVE[/red]" if live else "PAPER")
+        console.print(
+            f"{mode} | {built.name} on {symbol} {timeframe} | "
+            f"calendar {calendar.__class__.__name__}"
+        )
+        for outcome in supervisor.run(max_cycles=None if cycles == 0 else cycles):
+            console.print(outcome.render())
 
 
 def main() -> None:

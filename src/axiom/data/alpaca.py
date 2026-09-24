@@ -50,6 +50,9 @@ _ALPACA_TIMEFRAMES: dict[str, str] = {
 
 _DATA_URL = "https://data.alpaca.markets"
 
+#: Quote currencies recognised when a crypto pair is written without a separator.
+_CRYPTO_QUOTES = ("USDT", "USDC", "USD", "EUR", "GBP", "BTC")
+
 
 class AlpacaProvider(BaseProvider):
     """US equity and crypto bars from Alpaca.
@@ -109,6 +112,30 @@ class AlpacaProvider(BaseProvider):
             return f"{_DATA_URL}/v1beta3/crypto/us/bars"
         return f"{_DATA_URL}/v2/stocks/bars"
 
+    def venue_symbol(self, request: BarRequest) -> str:
+        """Translate an instrument symbol into Alpaca's spelling.
+
+        The crypto endpoint requires ``BASE/QUOTE`` and rejects anything else
+        with a 400, so the platform's ``BTC-USD`` has to be rewritten. Without
+        this every crypto request fails, and because the registry falls through
+        on a ``ProviderError`` the failure is invisible: Coinbase answers and
+        Alpaca's crypto bars are simply never reached.
+
+        Equities pass through untouched.
+        """
+        symbol = request.instrument.symbol.upper()
+        if request.instrument.asset_class is not AssetClass.CRYPTO:
+            return symbol
+        if "/" in symbol:
+            return symbol
+        base, sep, quote = symbol.partition("-")
+        if sep and base and quote:
+            return f"{base}/{quote}"
+        for candidate in _CRYPTO_QUOTES:
+            if symbol.endswith(candidate) and len(symbol) > len(candidate):
+                return f"{symbol[: -len(candidate)]}/{candidate}"
+        return f"{symbol}/USD"
+
     def _fetch_raw(self, request: BarRequest) -> pd.DataFrame:
         if not self.is_available():
             raise ProviderUnavailableError(
@@ -126,7 +153,9 @@ class AlpacaProvider(BaseProvider):
                 f"supported: {sorted(_ALPACA_TIMEFRAMES)}"
             )
 
-        symbol = request.instrument.symbol
+        # The venue spelling is also the key Alpaca bars the response under, so
+        # the same string has to be used for the query and the lookup.
+        symbol = self.venue_symbol(request)
         is_crypto = request.instrument.asset_class is AssetClass.CRYPTO
         params: dict[str, str] = {
             "symbols": symbol,

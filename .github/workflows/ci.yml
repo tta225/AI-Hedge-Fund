@@ -31,7 +31,38 @@ jobs:
       - name: Lint
         run: python -m ruff check src tests
 
+      - name: Types
+        # Strict mypy over src/. Runs before the tests because a type error is
+        # cheaper to read than the test failure it eventually causes.
+        run: python -m mypy
+
       - name: Test
         # The suite is fully offline — the synthetic provider means no network
         # or credentials are needed for any test.
         run: python -m pytest -q --cov=axiom --cov-report=term-missing
+
+  image:
+    # A container that has never been built is a deployment plan, not a
+    # deployment. Built on every push so a broken Dockerfile is found here
+    # rather than during an incident.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: axiom:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke
+        # Proves the entry point resolves inside the image. Not a substitute
+        # for the test suite — it is the check that the packaging works, which
+        # the suite cannot see because it runs against the source tree.
+        run: docker run --rm axiom:ci --help

@@ -60,6 +60,14 @@ class ICTConfig:
     equality_atr: float = liquidity.DEFAULT_EQUALITY_ATR
     #: Minimum excursion beyond a pool to register as a sweep.
     min_penetration_atr: float = liquidity.DEFAULT_MIN_PENETRATION_ATR
+    #: Require the raid bar to close back inside the pool. True is ICT's
+    #: definition — a sweep is a rejection, not a breakout — and it is the
+    #: default because it is what every measurement in this repository was made
+    #: against. It also means ``LiquiditySweep.closed_back_inside`` is
+    #: universally True under the default config, so a strategy filtering on it
+    #: empties its own population. Set False to admit breakout-type raids as
+    #: well, which makes that field discriminating.
+    sweep_require_close_back: bool = True
     #: Bars a sweep has to produce a confirming structure break.
     sweep_confirmation_bars: int = 20
     #: Lookback for the dealing range.
@@ -144,6 +152,7 @@ class ICTEngine:
             pools,
             atr_period=cfg.atr_period,
             min_penetration_atr=cfg.min_penetration_atr,
+            require_close_back=cfg.sweep_require_close_back,
         )
         liquidity.confirm_sweep_reversals(
             sweeps, events, max_bars=cfg.sweep_confirmation_bars

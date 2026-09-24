@@ -17,6 +17,7 @@ from axiom.execution.alpaca import (
     LIVE_URL,
     PAPER_URL,
     AlpacaVenue,
+    MarketClock,
 )
 from axiom.execution.base import ExecutionError, Order
 
@@ -504,3 +505,73 @@ class TestLiveApiRegressions:
         # A hypothetical equity ending in a quote currency must survive intact.
         assert AlpacaVenue.local_symbol("PSUSD") == "PSUSD"
         assert AlpacaVenue.local_symbol("PSUSD", is_crypto=False) == "PSUSD"
+
+
+class TestMarketClock:
+    """Whether the venue says it is open.
+
+    axiom.desk.calendar deliberately ships no holiday list, which is the right
+    call and leaves the desk unable to answer this offline. The broker knows,
+    and it is the same party that will accept or reject the order.
+    """
+
+    @staticmethod
+    def _clock(payload: dict[str, object]) -> MarketClock:
+        class _Stub(AlpacaVenue):
+            def _request(self, method: str, path: str, body: Any = None) -> Any:
+                assert path == "/v2/clock"
+                return payload
+
+        return _Stub(api_key="k", secret_key="s").clock()
+
+    def test_reads_an_open_market(self) -> None:
+        clock = self._clock(
+            {
+                "is_open": True,
+                "next_open": "2026-09-25T09:30:00-04:00",
+                "next_close": "2026-09-24T16:00:00-04:00",
+                "timestamp": "2026-09-24T10:00:00-04:00",
+            }
+        )
+        assert clock.is_open
+        assert clock.seconds_to_open == 0.0
+        assert "OPEN" in clock.render()
+
+    def test_reads_a_closed_market_and_times_the_wait(self) -> None:
+        clock = self._clock(
+            {
+                "is_open": False,
+                "next_open": "2026-09-24T09:30:00-04:00",
+                "next_close": "2026-09-24T16:00:00-04:00",
+                "timestamp": "2026-09-24T08:30:00-04:00",
+            }
+        )
+        assert not clock.is_open
+        assert clock.seconds_to_open == pytest.approx(3600.0)
+        assert "CLOSED" in clock.render()
+
+    def test_timestamps_are_normalised_to_utc(self) -> None:
+        """Alpaca answers in US/Eastern; comparing that to a naive UTC 'now'
+        would be wrong by four or five hours depending on the season."""
+        clock = self._clock(
+            {
+                "is_open": False,
+                "next_open": "2026-09-24T09:30:00-04:00",
+                "next_close": "2026-09-24T16:00:00-04:00",
+                "timestamp": "2026-09-24T08:30:00-04:00",
+            }
+        )
+        assert str(clock.next_open) == "2026-09-24 13:30:00+00:00"
+        assert str(clock.at) == "2026-09-24 12:30:00+00:00"
+
+    def test_seconds_to_open_never_goes_negative(self) -> None:
+        """A stale next_open must read as "now", not as a negative sleep."""
+        clock = self._clock(
+            {
+                "is_open": False,
+                "next_open": "2026-09-24T09:30:00-04:00",
+                "next_close": "2026-09-24T16:00:00-04:00",
+                "timestamp": "2026-09-24T11:00:00-04:00",
+            }
+        )
+        assert clock.seconds_to_open == 0.0

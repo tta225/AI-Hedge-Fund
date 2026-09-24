@@ -130,6 +130,40 @@ class AccountSnapshot:
         return not self.trading_blocked
 
 
+@dataclass(frozen=True, slots=True)
+class MarketClock:
+    """Whether the venue says the market is open, and when it next changes.
+
+    :mod:`axiom.desk.calendar` deliberately ships no holiday list, on the
+    grounds that a stale built-in list is worse than none — which is right, and
+    leaves the desk unable to answer "is the market open" without being told.
+    The broker knows, authoritatively, and it is the same party that will accept
+    or reject the order. Asking it is strictly better than maintaining a
+    parallel schedule that can silently drift out of date.
+
+    Not a replacement for the calendar: the calendar decides whether the desk
+    *should* be working, offline and in a backtest. This decides whether the
+    venue will take an order right now.
+    """
+
+    is_open: bool
+    next_open: pd.Timestamp
+    next_close: pd.Timestamp
+    at: pd.Timestamp
+
+    @property
+    def seconds_to_open(self) -> float:
+        """Seconds until the next open. Zero when already open."""
+        if self.is_open:
+            return 0.0
+        return float(max(0.0, (self.next_open - self.at).total_seconds()))
+
+    def render(self) -> str:
+        if self.is_open:
+            return f"market OPEN, closes {self.next_close} (in {(self.next_close - self.at)})"
+        return f"market CLOSED, opens {self.next_open} (in {(self.next_open - self.at)})"
+
+
 class AlpacaVenue(ExecutionVenue):
     """Submit, cancel and read back orders at Alpaca.
 
@@ -291,6 +325,22 @@ class AlpacaVenue(ExecutionVenue):
             trading_blocked=bool(payload.get("trading_blocked", False)),
             pattern_day_trader=bool(payload.get("pattern_day_trader", False)),
             currency=str(payload.get("currency", "USD")),
+        )
+
+    def clock(self) -> MarketClock:
+        """Ask the venue whether it is open. Cheap, unauthenticated by session.
+
+        Worth calling before a market order rather than inferring from a local
+        calendar: an order sent into a closed session queues until the open and
+        fills at a price nobody decided on, which looks like slippage rather
+        than like the scheduling mistake it is.
+        """
+        payload = self._request("GET", "/v2/clock")
+        return MarketClock(
+            is_open=bool(payload.get("is_open", False)),
+            next_open=pd.Timestamp(str(payload.get("next_open"))).tz_convert("UTC"),
+            next_close=pd.Timestamp(str(payload.get("next_close"))).tz_convert("UTC"),
+            at=pd.Timestamp(str(payload.get("timestamp"))).tz_convert("UTC"),
         )
 
     def positions(self) -> dict[str, float]:

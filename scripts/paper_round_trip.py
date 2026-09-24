@@ -253,7 +253,19 @@ def run(symbol: str, db: str, *, quantity: float = 1.0) -> Report:
                 cancelled += 1
             except ExecutionError as exc:
                 print(f"    cancel failed: {exc}")
-        report.record("protective legs cancelled", True, f"{cancelled} order(s)")
+        # Counting cancels is not the check. Alpaca's bracket legs are an OCO
+        # pair, so cancelling one cancels its sibling and the count
+        # under-reports; and `working_orders` reads top-level rows, under which
+        # legs may be nested. What matters is that nothing is left armed, so
+        # that is what is asserted.
+        time.sleep(1)
+        remaining = venue.working_orders()
+        report.record(
+            "no orders left working",
+            not remaining,
+            f"cancelled {cancelled}, {len(remaining)} still open"
+            + (f": {[o.instrument.symbol for o in remaining]}" if remaining else ""),
+        )
 
         held = venue.positions().get(symbol, 0.0)
         if held:

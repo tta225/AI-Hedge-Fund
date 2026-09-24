@@ -60,6 +60,29 @@ DEFAULT_OVERLAP = pd.Timedelta(minutes=5)
 DEFAULT_COLD_START = pd.Timedelta(days=1)
 
 
+def _as_utc(timestamp: pd.Timestamp) -> pd.Timestamp:
+    """Coerce to tz-aware UTC, treating a naive stamp as already UTC.
+
+    The poller mixes three sources of time and they did not agree. The stored
+    watermark comes back tz-aware, because it is rebuilt from integer
+    microseconds with an explicit UTC. A cold-start watermark is
+    ``now - cold_start``, which inherits whatever the *caller* passed. And the
+    venue's fill timestamps are tz-aware, because Alpaca sends an offset.
+
+    So ``max(watermark, fill.timestamp)`` raised ``TypeError: Cannot compare
+    tz-naive and tz-aware timestamps`` — but only when all three of a cold
+    start, a naive ``now``, and at least one fill coincided. A desk polling a
+    quiet window never saw it, because the comparison is inside the loop over
+    fills. It surfaced on the first equity fill of the first round trip.
+
+    Normalising at the boundary rather than at each comparison is deliberate:
+    the alternative is remembering to convert at every site, and the site that
+    gets forgotten is the one that crashes the polling loop in production.
+    """
+    stamp = pd.Timestamp(timestamp)
+    return stamp.tz_localize("UTC") if stamp.tzinfo is None else stamp.tz_convert("UTC")
+
+
 @dataclass(slots=True)
 class PollOutcome:
     """What one poll found."""
@@ -154,12 +177,12 @@ class FillPoller:
         raw = self.store.get_meta(WATERMARK_KEY)
         if raw:
             return pd.Timestamp(int(raw) * 1_000, unit="ns", tz="UTC")
-        moment = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+        moment = pd.Timestamp.now(tz="UTC") if now is None else _as_utc(now)
         return moment - self.cold_start
 
     def poll(self, now: pd.Timestamp | None = None) -> PollOutcome:
         """Fetch, attribute and book every execution since the watermark."""
-        moment = pd.Timestamp.now(tz="UTC") if now is None else pd.Timestamp(now)
+        moment = pd.Timestamp.now(tz="UTC") if now is None else _as_utc(now)
         outcome = PollOutcome(at=moment)
 
         since = self.watermark(moment) - self.overlap
@@ -184,7 +207,7 @@ class FillPoller:
                 outcome.recorded += 1
             else:
                 outcome.duplicates += 1
-            latest = max(latest, pd.Timestamp(venue_fill.fill.timestamp))
+            latest = max(latest, _as_utc(venue_fill.fill.timestamp))
 
         # Advanced last, and only to what was actually read. A crash before
         # this point re-reads the window; a crash after it would have lost it.

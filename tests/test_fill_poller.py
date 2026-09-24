@@ -340,3 +340,49 @@ class TestMigration:
             store._connection.commit()
         with pytest.raises(StoreError, match="schema version"):
             Store(path)
+
+
+class TestNaiveClockRegression:
+    """A crash found by the first equity fill, not by any unit test.
+
+    The poller mixed three sources of time: a stored watermark (tz-aware, being
+    rebuilt from integer microseconds with an explicit UTC), a cold-start
+    watermark (``now - cold_start``, inheriting whatever the caller passed), and
+    the venue's fill timestamps (tz-aware, Alpaca sends an offset).
+
+    `max(watermark, fill.timestamp)` then raised TypeError — but only when a
+    cold start, a naive `now`, and at least one fill coincided. The comparison
+    lives inside the loop over fills, so every poll of a quiet window passed.
+    """
+
+    def test_a_naive_now_on_a_cold_start_with_a_fill(self, tmp_path) -> None:
+        source = _StubSource([[_venue_fill()]])
+        with Store(tmp_path / "desk.db") as store:
+            poller = FillPoller(source, store)
+            # Naive, exactly as the desk's own clock produces it.
+            naive = pd.Timestamp("2026-01-01T13:00:00")
+            assert naive.tzinfo is None
+            outcome = poller.poll(naive)
+            assert not outcome.error
+            assert outcome.recorded == 1
+
+    def test_the_watermark_stays_comparable_across_polls(self, tmp_path) -> None:
+        """Poll naive, then aware: the stored watermark must serve both."""
+        source = _StubSource([[_venue_fill("f1")], [_venue_fill("f2", at=T0)]])
+        with Store(tmp_path / "desk.db") as store:
+            poller = FillPoller(source, store)
+            first = poller.poll(pd.Timestamp("2026-01-01T13:00:00"))
+            second = poller.poll(pd.Timestamp("2026-01-01T14:00:00Z"))
+            assert not first.error and not second.error
+            assert second.duplicates == 0 or second.recorded == 1
+
+    def test_a_naive_and_an_aware_now_agree_on_the_window(self, tmp_path) -> None:
+        """Naive is treated as UTC, so the two must request the same window —
+        otherwise the convention silently shifts the read by the local offset."""
+        aware_source = _StubSource([[]])
+        naive_source = _StubSource([[]])
+        with Store(tmp_path / "aware.db") as store:
+            FillPoller(aware_source, store).poll(pd.Timestamp("2026-01-01T13:00:00Z"))
+        with Store(tmp_path / "naive.db") as store:
+            FillPoller(naive_source, store).poll(pd.Timestamp("2026-01-01T13:00:00"))
+        assert aware_source.requested == naive_source.requested

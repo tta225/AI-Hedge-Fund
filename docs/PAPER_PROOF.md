@@ -111,16 +111,61 @@ exists to catch.
 
 ---
 
+## The equity round trip — 2026-09-24, 13:36 UTC
+
+Run at the open with `scripts/paper_round_trip.py`. **14/14 steps passed**, and
+the two paths the crypto order could not reach are now proven.
+
+**Brackets are held by the venue.** One share of XLF entered at $54.40 with a
+bracket, and the legs were read back from `/v2/orders?nested=true` rather than
+trusted from the submit response:
+
+```
+[PASS] venue holds protective legs — 2 leg(s): ['limit', 'stop']
+[PASS] a stop is among them — limit@59.84, stop@48.96
+```
+
+This is the one that mattered. The reason the desk sends stops to the venue
+instead of holding them in memory is that a stop in this process does not exist
+during a crash — and a bracket that silently fails to attach turns a bounded
+loss into an unbounded one while looking like a successful entry. It attaches.
+
+**Equity mechanics are clean.** No time-in-force problem (DAY is valid), no
+symbol-spelling problem (plain tickers), and no fee-in-kind problem — the
+position matched the fill exactly, so `XLF reconciles — clean` with the default
+absolute tolerance and no relative allowance at all.
+
+The idempotency guarantee held again: re-polling recognised every fill as a
+duplicate and booked nothing twice.
+
+## Bug 4 — the fill poller crashed on a naive clock
+
+```
+TypeError: Cannot compare tz-naive and tz-aware timestamps
+  axiom/desk/fills.py:187 in poll
+```
+
+The poller mixed three sources of time and they did not agree:
+
+| source | timezone |
+|---|---|
+| stored watermark | **aware** — rebuilt from integer microseconds with an explicit UTC |
+| cold-start watermark | **inherits the caller's** — `now - cold_start` |
+| venue fill timestamps | **aware** — Alpaca sends an offset |
+
+So `max(watermark, fill.timestamp)` raised, but only when a cold start, a naive
+`now`, and at least one fill coincided. The comparison sits inside the loop over
+fills, so every poll of a quiet window passed — including the desk run on
+2026-09-01, which polled zero fills and reported success. The desk's own clock
+produces naive UTC, so this would have fired on the first fill the desk ever
+polled for itself.
+
+Fixed by normalising at the boundary rather than at each comparison: the
+alternative is remembering to convert at every site, and the site that gets
+forgotten is the one that crashes the polling loop in production. Three
+regression tests, each verified to fail against the old code.
+
 ## What is still unproven
-
-**The equity path.** US markets were closed at the time of the run (22:35 ET),
-so the round trip was done on crypto. Equities avoid all three bugs above — DAY
-is valid, positions come back as plain tickers, fees are cash — but "should be
-fine" is exactly the reasoning that produced these three, and the equity path
-deserves the same treatment during market hours.
-
-**Brackets.** No protective legs were attached to the test order, so the
-bracket/OTO construction remains stub-tested only.
 
 **The account holds a position the desk did not create.** 10 SPY, bought
 2026-08-10, before any of this. Reconciliation correctly reports it as an
@@ -132,9 +177,15 @@ than a code change.
 
 ## The general lesson
 
-Three bugs, three different layers: a request parameter, a symbol mapping, and
-an accounting assumption. Every one passed its unit tests. Every one was found
-by the first real order.
+Four bugs, four different layers: a request parameter, a symbol mapping, an
+accounting assumption, and a timezone convention. Every one passed its unit
+tests. Every one was found by a real order — three by the first crypto order,
+the fourth by the first equity fill three weeks later.
+
+The fourth is the most instructive, because it had been reached before and not
+triggered: the 2026-09-01 desk run polled fills successfully, but polled *zero*
+of them, and the crash lives inside the loop body. A path that runs is not the
+same as a path that is exercised.
 
 A stub returns what the code expects. That makes it a good regression test and a
 poor discovery tool, and it is worth being precise about which of the two you
